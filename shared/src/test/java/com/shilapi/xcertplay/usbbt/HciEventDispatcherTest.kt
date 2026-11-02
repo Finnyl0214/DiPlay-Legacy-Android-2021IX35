@@ -44,8 +44,14 @@ class HciEventDispatcherTest {
         )) {
             Fixture().use { f ->
                 f.onWrite = { f.incoming.offer(status(opcode)); f.incoming.offer(byteArrayOf(0x03, 0)) }
-                assertTrue(f.dispatcher.sendCommand(opcode, byteArrayOf(), 1_000).isSuccess)
-                assertEquals(0x03, f.dispatcher.pollEvent(1_000)?.code)
+                val result = f.dispatcher.sendCommand(opcode, byteArrayOf(), 1_000)
+                assertTrue(
+                    "opcode=0x${opcode.toString(16)} failed: ${result.exceptionOrNull()?.message}",
+                    result.isSuccess,
+                )
+                val asyncEvent = f.dispatcher.pollEvent(1_000)
+                assertNotNull("opcode=0x${opcode.toString(16)} lost its following async event", asyncEvent)
+                assertEquals(0x03, asyncEvent?.code)
             }
         }
     }
