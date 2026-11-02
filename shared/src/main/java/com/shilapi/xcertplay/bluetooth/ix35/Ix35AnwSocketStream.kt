@@ -67,7 +67,7 @@ class Ix35AnwSocketStream private constructor(
                     writeInt(socketIndex)
                     writeByteArray(chunk)
                     writeInt(chunk.size)
-                    writeIntArray(written)
+                    writeInt(written.size)
                 }, { reply -> reply.readIntArray(written) })
                 if (result < 0) throw IOException("ANWBT_SocketWrite returned $result")
                 val actual = written[0]
@@ -119,7 +119,7 @@ class Ix35AnwSocketStream private constructor(
             lock.notifyAll()
         }
         try {
-            transactInt(TRANSACTION_UNREGISTER_SOCKET_CALLBACK, write = { writeStrongBinder(callback) })
+            transactVoid(TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) }
         } catch (e: Exception) {
             Log.w(TAG, "ANW callback unregister failed", e)
         }
@@ -132,6 +132,20 @@ class Ix35AnwSocketStream private constructor(
             context.unbindService(connection)
         } catch (e: Exception) {
             Log.w(TAG, "ANW service unbind failed", e)
+        }
+    }
+
+    private fun transactVoid(code: Int, write: Parcel.() -> Unit = {}) {
+        val data = Parcel.obtain()
+        val reply = Parcel.obtain()
+        try {
+            data.writeInterfaceToken(SERVICE_DESCRIPTOR)
+            data.write()
+            if (!remote.transact(code, data, reply, 0)) throw RemoteException("Transaction $code rejected")
+            reply.readException()
+        } finally {
+            reply.recycle()
+            data.recycle()
         }
     }
 
@@ -156,20 +170,70 @@ class Ix35AnwSocketStream private constructor(
         }
     }
 
-    private class SocketCallback(private val receiver: (ByteArray, Int) -> Unit) : Binder(), IInterface {
+    private class SocketCallback : Binder(), IInterface {
+        private val callbackLock = Any()
+        private val pending = ArrayDeque<Pair<Int, ByteArray>>()
+        private var pendingBytes = 0
+        private var expectedIndex = -1
+        private var receiver: ((ByteArray, Int) -> Unit)? = null
+
         init { attachInterface(this, CALLBACK_DESCRIPTOR) }
         override fun asBinder(): IBinder = this
+
+        fun attach(index: Int, target: (ByteArray, Int) -> Unit) {
+            val buffered = ArrayList<Pair<Int, ByteArray>>()
+            synchronized(callbackLock) {
+                expectedIndex = index
+                receiver = target
+                while (!pending.isEmpty()) buffered.add(pending.removeFirst())
+                pendingBytes = 0
+            }
+            buffered.forEach { (socket, bytes) ->
+                if (socket == index) target(bytes, bytes.size)
+            }
+        }
+
+        fun detach() {
+            synchronized(callbackLock) { receiver = null }
+        }
+
+        private fun dispatch(index: Int, bytes: ByteArray, length: Int) {
+            if (length <= 0 || length > bytes.size) return
+            val target: ((ByteArray, Int) -> Unit)?
+            synchronized(callbackLock) {
+                target = receiver
+                if (target == null) {
+                    if (pendingBytes + length <= MAX_PENDING_BYTES) {
+                        val copy = if (length == bytes.size) bytes.copyOf() else bytes.copyOf(length)
+                        pending.addLast(Pair(index, copy))
+                        pendingBytes += copy.size
+                    } else {
+                        Log.e(TAG, "Dropping early ANW callback data: pending buffer limit exceeded")
+                    }
+                    return
+                }
+                if (expectedIndex != index) return
+            }
+            target.invoke(bytes, length)
+        }
+
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
             if (code == INTERFACE_TRANSACTION) {
                 reply?.writeString(CALLBACK_DESCRIPTOR)
                 return true
             }
             if (code != CALLBACK_TRANSACTION_DATA_IND) return super.onTransact(code, data, reply, flags)
-            data.enforceInterface(CALLBACK_DESCRIPTOR)
-            data.readInt() // socket index; one stream owns the active socket
+            val tokenPosition = data.dataPosition()
+            try {
+                data.enforceInterface(CALLBACK_DESCRIPTOR)
+            } catch (first: SecurityException) {
+                data.setDataPosition(tokenPosition)
+                data.enforceInterface(UPSTREAM_CALLBACK_DESCRIPTOR)
+            }
+            val index = data.readInt()
             val bytes = data.createByteArray()
             val length = data.readInt()
-            if (bytes != null && length > 0 && length <= bytes.size) receiver(bytes, length)
+            if (bytes != null) dispatch(index, bytes, length)
             reply?.writeNoException()
             return true
         }
@@ -181,6 +245,7 @@ class Ix35AnwSocketStream private constructor(
         private const val SERVICE_CLASS = "com.anwbtsdk.service.AnwBTSdkService"
         private const val SERVICE_DESCRIPTOR = "com.anwbtsdk.service.IAnwPhoneLink"
         private const val CALLBACK_DESCRIPTOR = "com.anwbtsdk.service.IAnwSocketDataCallBack"
+        private const val UPSTREAM_CALLBACK_DESCRIPTOR = "com.anwsdk.service.IAnwSocketDataCallBack"
 
         // ix35 v2.7 audit; upstream DiPlay's corresponding codes are one lower.
         private const val TRANSACTION_SOCKET_INIT = 223
@@ -222,8 +287,8 @@ class Ix35AnwSocketStream private constructor(
                 if (!latch.await(5, TimeUnit.SECONDS)) throw IOException("Timed out binding ix35 ANW service")
                 val remote = binder ?: throw IOException("ix35 ANW service returned a null Binder")
                 if (!remote.isBinderAlive) throw IOException("ix35 ANW Binder is not alive")
-                callback = SocketCallback { bytes, length -> streamRef?.enqueue(bytes, length) }
-                transact(remote, TRANSACTION_REGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) }
+                callback = SocketCallback()
+                transactVoid(remote, TRANSACTION_REGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) }
                 val initResult = transact(remote, TRANSACTION_SOCKET_INIT) {}
                 if (initResult < 0) throw IOException("ANWBT_SocketInit returned $initResult")
                 val index = intArrayOf(-1)
@@ -238,7 +303,7 @@ class Ix35AnwSocketStream private constructor(
                         writeInt(0)
                         writeLong(0L)
                         writeLong(0L)
-                        writeIntArray(index)
+                        writeInt(index.size)
                     },
                     readTail = { reply -> reply.readIntArray(index) }
                 )
@@ -246,11 +311,11 @@ class Ix35AnwSocketStream private constructor(
                     throw IOException("ANWBT_SocketConnect failed ret=$connectResult index=${index[0]}")
                 }
                 val stream = Ix35AnwSocketStream(appContext, remote, serviceConnection, index[0], callback)
-                streamRef = stream
+                callback.attach(index[0]) { bytes, length -> stream.enqueue(bytes, length) }
                 Log.i(TAG, "ix35 ANW Socket connected ret=$connectResult index=${index[0]}")
                 return stream
             } catch (e: Exception) {
-                runCatching { transact(binder, TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) } }
+                runCatching { transactVoid(binder, TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) } }
                 runCatching { transact(binder, TRANSACTION_SOCKET_DENIT) {} }
                 runCatching { appContext.unbindService(serviceConnection) }
                 if (e is IOException) throw e
@@ -258,8 +323,20 @@ class Ix35AnwSocketStream private constructor(
             }
         }
 
-        // The app currently opens one ANW socket at a time.
-        @Volatile private var streamRef: Ix35AnwSocketStream? = null
+        private fun transactVoid(remote: IBinder?, code: Int, write: Parcel.() -> Unit) {
+            val target = remote ?: throw IOException("ANW Binder unavailable")
+            val data = Parcel.obtain()
+            val reply = Parcel.obtain()
+            try {
+                data.writeInterfaceToken(SERVICE_DESCRIPTOR)
+                data.write()
+                if (!target.transact(code, data, reply, 0)) throw RemoteException("Transaction $code rejected")
+                reply.readException()
+            } finally {
+                reply.recycle()
+                data.recycle()
+            }
+        }
 
         private fun transact(remote: IBinder?, code: Int, write: Parcel.() -> Unit, readTail: (Parcel) -> Unit = {}): Int {
             val target = remote ?: throw IOException("ANW Binder unavailable")
