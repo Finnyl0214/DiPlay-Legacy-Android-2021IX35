@@ -284,6 +284,7 @@ class Ix35AnwSocketStream private constructor(
             }
             if (!bound) throw IOException("ix35 ANW service bindService returned false")
             var callback: SocketCallback? = null
+            var socketInitialized = false
             try {
                 if (!latch.await(5, TimeUnit.SECONDS)) throw IOException("Timed out binding ix35 ANW service")
                 val remote = binder ?: throw IOException("ix35 ANW service returned a null Binder")
@@ -293,6 +294,7 @@ class Ix35AnwSocketStream private constructor(
                 transactVoid(remote, TRANSACTION_REGISTER_SOCKET_CALLBACK) { writeStrongBinder(socketCallback) }
                 val initResult = transact(remote, TRANSACTION_SOCKET_INIT) {}
                 if (initResult < 0) throw IOException("ANWBT_SocketInit returned $initResult")
+                socketInitialized = true
                 val index = intArrayOf(-1)
                 val guid = uuidToGuidBytes(IX35_IAP2_GUID)
                 val connectResult = transact(
@@ -318,7 +320,7 @@ class Ix35AnwSocketStream private constructor(
                 return stream
             } catch (e: Exception) {
                 runCatching { transactVoid(binder, TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) } }
-                runCatching { transact(binder, TRANSACTION_SOCKET_DENIT) {} }
+                if (socketInitialized) runCatching { transact(binder, TRANSACTION_SOCKET_DENIT) {} }
                 runCatching { appContext.unbindService(serviceConnection) }
                 if (e is IOException) throw e
                 throw IOException("ix35 ANW Socket connection failed", e)
