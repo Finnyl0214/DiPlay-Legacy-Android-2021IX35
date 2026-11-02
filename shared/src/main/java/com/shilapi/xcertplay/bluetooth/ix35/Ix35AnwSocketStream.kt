@@ -215,7 +215,7 @@ class Ix35AnwSocketStream private constructor(
                 }
                 if (expectedIndex != index) return
             }
-            target.invoke(bytes, length)
+            target?.invoke(bytes, length)
         }
 
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
@@ -292,7 +292,7 @@ class Ix35AnwSocketStream private constructor(
                 val socketCallback = SocketCallback()
                 callback = socketCallback
                 transactVoid(remote, TRANSACTION_REGISTER_SOCKET_CALLBACK) { writeStrongBinder(socketCallback) }
-                val initResult = transact(remote, TRANSACTION_SOCKET_INIT) {}
+                val initResult = transact(remote, TRANSACTION_SOCKET_INIT, write = {})
                 if (initResult < 0) throw IOException("ANWBT_SocketInit returned $initResult")
                 socketInitialized = true
                 val index = intArrayOf(-1)
@@ -320,7 +320,7 @@ class Ix35AnwSocketStream private constructor(
                 return stream
             } catch (e: Exception) {
                 runCatching { transactVoid(binder, TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) } }
-                if (socketInitialized) runCatching { transact(binder, TRANSACTION_SOCKET_DENIT) {} }
+                if (socketInitialized) runCatching { transact(binder, TRANSACTION_SOCKET_DENIT, write = {}) }
                 runCatching { appContext.unbindService(serviceConnection) }
                 if (e is IOException) throw e
                 throw IOException("ix35 ANW Socket connection failed", e)
