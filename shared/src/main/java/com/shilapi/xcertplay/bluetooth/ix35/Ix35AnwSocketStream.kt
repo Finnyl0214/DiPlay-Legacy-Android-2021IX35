@@ -170,6 +170,7 @@ class Ix35AnwSocketStream private constructor(
             val bytes = data.createByteArray()
             val length = data.readInt()
             if (bytes != null && length > 0 && length <= bytes.size) receiver(bytes, length)
+            reply?.writeNoException()
             return true
         }
     }
@@ -227,15 +228,20 @@ class Ix35AnwSocketStream private constructor(
                 if (initResult < 0) throw IOException("ANWBT_SocketInit returned $initResult")
                 val index = intArrayOf(-1)
                 val guid = uuidToGuidBytes(IX35_IAP2_GUID)
-                val connectResult = transact(remote, TRANSACTION_SOCKET_CONNECT) {
-                    writeInt(1)
-                    writeString(address)
-                    writeByteArray(guid)
-                    writeInt(0)
-                    writeLong(0L)
-                    writeLong(0L)
-                    writeIntArray(index)
-                }, { reply -> reply.readIntArray(index) })
+                val connectResult = transact(
+                    remote,
+                    TRANSACTION_SOCKET_CONNECT,
+                    write = {
+                        writeInt(1)
+                        writeString(address)
+                        writeByteArray(guid)
+                        writeInt(0)
+                        writeLong(0L)
+                        writeLong(0L)
+                        writeIntArray(index)
+                    },
+                    readTail = { reply -> reply.readIntArray(index) }
+                )
                 if (connectResult < 0 || index[0] < 0) {
                     throw IOException("ANWBT_SocketConnect failed ret=$connectResult index=${index[0]}")
                 }
