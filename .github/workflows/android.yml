@@ -51,3 +51,15 @@ jobs:
           ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :home:testDebugUnitTest \
             :mobile:lintDebug :home:lintDebug :maphost:lintDebug \
             :mobile:assembleDebug :home:assembleDebug :maphost:assembleDebug
+
+      - name: Upload debug APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ix35-debug-apks-run-${{ github.run_number }}
+          path: |
+            mobile/build/outputs/apk/debug/*.apk
+            home/build/outputs/apk/debug/*.apk
+            maphost/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
