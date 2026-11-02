@@ -72,7 +72,7 @@ class Ix35AnwSocketStream private constructor(
                 if (result < 0) throw IOException("ANWBT_SocketWrite returned $result")
                 val actual = written[0]
                 if (actual <= 0 || actual > count) {
-                    throw IOException("ANWBT_SocketWrite returned invalid written=\${actual}, chunk=$count")
+                    throw IOException("ANWBT_SocketWrite returned invalid written=${actual}, chunk=$count")
                 }
                 offset += actual
             }
@@ -118,6 +118,7 @@ class Ix35AnwSocketStream private constructor(
             closed = true
             lock.notifyAll()
         }
+        callback.detach()
         try {
             transactVoid(TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) }
         } catch (e: Exception) {
@@ -287,8 +288,9 @@ class Ix35AnwSocketStream private constructor(
                 if (!latch.await(5, TimeUnit.SECONDS)) throw IOException("Timed out binding ix35 ANW service")
                 val remote = binder ?: throw IOException("ix35 ANW service returned a null Binder")
                 if (!remote.isBinderAlive) throw IOException("ix35 ANW Binder is not alive")
-                callback = SocketCallback()
-                transactVoid(remote, TRANSACTION_REGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) }
+                val socketCallback = SocketCallback()
+                callback = socketCallback
+                transactVoid(remote, TRANSACTION_REGISTER_SOCKET_CALLBACK) { writeStrongBinder(socketCallback) }
                 val initResult = transact(remote, TRANSACTION_SOCKET_INIT) {}
                 if (initResult < 0) throw IOException("ANWBT_SocketInit returned $initResult")
                 val index = intArrayOf(-1)
@@ -310,8 +312,8 @@ class Ix35AnwSocketStream private constructor(
                 if (connectResult < 0 || index[0] < 0) {
                     throw IOException("ANWBT_SocketConnect failed ret=$connectResult index=${index[0]}")
                 }
-                val stream = Ix35AnwSocketStream(appContext, remote, serviceConnection, index[0], callback)
-                callback.attach(index[0]) { bytes, length -> stream.enqueue(bytes, length) }
+                val stream = Ix35AnwSocketStream(appContext, remote, serviceConnection, index[0], socketCallback)
+                socketCallback.attach(index[0]) { bytes, length -> stream.enqueue(bytes, length) }
                 Log.i(TAG, "ix35 ANW Socket connected ret=$connectResult index=${index[0]}")
                 return stream
             } catch (e: Exception) {
