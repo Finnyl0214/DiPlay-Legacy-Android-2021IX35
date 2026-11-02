@@ -1,7 +1,7 @@
 name: Android CI
 
-# Runs the unit tests, lint and debug builds named in AGENTS.md so pull
-# requests are gated on them instead of relying on local runs only.
+# Runs the ix35 app and its shared dependencies only. Sample apps are not
+# part of the ix35 deliverable and are intentionally excluded from CI builds.
 # Source-only: no signing secrets and no runtime authentication assets are
 # provisioned here (see docs/RELEASE_SIGNING.md and SECURITY.md).
 
@@ -44,22 +44,18 @@ jobs:
           # the API 19 native build).
           "$SDKMANAGER" "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" "ndk;25.2.9519653"
 
-      - name: Run unit tests, lint and debug builds
+      - name: Run shared tests, mobile lint and ix35 debug build
         shell: bash
         run: |
           set -euo pipefail
-          ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :home:testDebugUnitTest \
-            :mobile:lintDebug :home:lintDebug :maphost:lintDebug \
-            :mobile:assembleDebug :home:assembleDebug :maphost:assembleDebug
+          ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest \
+            :mobile:lintDebug :mobile:assembleDebug
 
-      - name: Upload debug APKs
+      - name: Upload ix35 debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: ix35-debug-apks-run-${{ github.run_number }}
-          path: |
-            mobile/build/outputs/apk/debug/*.apk
-            samples/home/build/outputs/apk/debug/*.apk
-            samples/maphost/build/outputs/apk/debug/*.apk
+          name: ix35-mobile-debug-apk-run-${{ github.run_number }}
+          path: mobile/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
