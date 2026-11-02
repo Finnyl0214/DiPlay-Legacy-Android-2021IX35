@@ -119,12 +119,12 @@ class Ix35AnwSocketStream private constructor(
             lock.notifyAll()
         }
         try {
-            transactInt(TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) }
+            transactInt(TRANSACTION_UNREGISTER_SOCKET_CALLBACK, write = { writeStrongBinder(callback) })
         } catch (e: Exception) {
             Log.w(TAG, "ANW callback unregister failed", e)
         }
         try {
-            transactInt(TRANSACTION_SOCKET_DISCONNECT) { writeInt(socketIndex) }
+            transactInt(TRANSACTION_SOCKET_DISCONNECT, write = { writeInt(socketIndex) })
         } catch (e: Exception) {
             Log.w(TAG, "ANW socket disconnect failed", e)
         }
@@ -235,7 +235,7 @@ class Ix35AnwSocketStream private constructor(
                     writeLong(0L)
                     writeLong(0L)
                     writeIntArray(index)
-                }.also { reply -> reply.readIntArray(index) }
+                }, { reply -> reply.readIntArray(index) })
                 if (connectResult < 0 || index[0] < 0) {
                     throw IOException("ANWBT_SocketConnect failed ret=$connectResult index=${index[0]}")
                 }
@@ -255,7 +255,7 @@ class Ix35AnwSocketStream private constructor(
         // The app currently opens one ANW socket at a time.
         @Volatile private var streamRef: Ix35AnwSocketStream? = null
 
-        private fun transact(remote: IBinder?, code: Int, write: Parcel.() -> Unit): Int {
+        private fun transact(remote: IBinder?, code: Int, write: Parcel.() -> Unit, readTail: (Parcel) -> Unit = {}): Int {
             val target = remote ?: throw IOException("ANW Binder unavailable")
             val data = Parcel.obtain()
             val reply = Parcel.obtain()
@@ -264,7 +264,9 @@ class Ix35AnwSocketStream private constructor(
                 data.write()
                 if (!target.transact(code, data, reply, 0)) throw RemoteException("Transaction $code rejected")
                 reply.readException()
-                return reply.readInt()
+                val result = reply.readInt()
+                readTail(reply)
+                return result
             } finally {
                 reply.recycle()
                 data.recycle()
