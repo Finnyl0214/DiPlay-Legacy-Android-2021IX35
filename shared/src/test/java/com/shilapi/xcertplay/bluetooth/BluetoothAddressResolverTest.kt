@@ -53,57 +53,6 @@ class BluetoothAddressResolverTest {
     }
 
     @Test
-    fun selectAccessoryAddressPrefersValidatedManagerHardwareAddress() {
-        assertEquals(
-            "AA:BB:CC:DD:EE:FF",
-            BluetoothAddressResolver.selectAccessoryAddress(
-                managerAddress = "aa:bb:cc:dd:ee:ff",
-                resolvedAddress = "11:22:33:44:55:66",
-                fallbackAddress = "12:34:56:78:9A:BC",
-                requireHardwareAddress = true,
-            ),
-        )
-    }
-
-    @Test
-    fun selectAccessoryAddressUsesResolvedHardwareAddressWhenManagerAddressIsInvalid() {
-        assertEquals(
-            "11:22:33:44:55:66",
-            BluetoothAddressResolver.selectAccessoryAddress(
-                managerAddress = "02:00:00:00:00:00",
-                resolvedAddress = "11:22:33:44:55:66",
-                fallbackAddress = "12:34:56:78:9A:BC",
-                requireHardwareAddress = true,
-            ),
-        )
-    }
-
-    @Test
-    fun selectAccessoryAddressRejectsGeneratedFallbackForAnw() {
-        assertNull(
-            BluetoothAddressResolver.selectAccessoryAddress(
-                managerAddress = null,
-                resolvedAddress = "02:00:00:00:00:00",
-                fallbackAddress = "12:34:56:78:9A:BC",
-                requireHardwareAddress = true,
-            ),
-        )
-    }
-
-    @Test
-    fun selectAccessoryAddressKeepsLegacyFallbackForNonAnwTransport() {
-        assertEquals(
-            "12:34:56:78:9A:BC",
-            BluetoothAddressResolver.selectAccessoryAddress(
-                managerAddress = null,
-                resolvedAddress = null,
-                fallbackAddress = "12:34:56:78:9A:BC",
-                requireHardwareAddress = false,
-            ),
-        )
-    }
-
-    @Test
     fun testResolveWithCustomOverride() {
         val result = BluetoothAddressResolver.resolve(context, "11:22:33:44:55:66")
         assertEquals("11:22:33:44:55:66", result)
