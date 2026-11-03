@@ -4058,27 +4058,13 @@ class CarPlayController(
 
     @Suppress("DEPRECATION")
     private fun accessoryBluetoothMac(adapter: BluetoothAdapter?): String {
-        val bluetoothManager = CarPlayBluetoothManager.get(appContext)
         val managerAddress = try {
-            bluetoothManager.localAddress(appContext)
+            CarPlayBluetoothManager.get(appContext).localAddress(appContext)
         } catch (_: Throwable) {
             null
         }
-        val ix35AnwActive = bluetoothManager.ix35Anw?.isSupported() == true
-        val address = BluetoothAddressResolver.selectAccessoryAddress(
-            managerAddress = managerAddress,
-            resolvedAddress = BluetoothAddressResolver.resolve(appContext),
-            fallbackAddress = airPlayConfig.btMac,
-            requireHardwareAddress = ix35AnwActive,
-        )
-        if (address != null) return address
-        if (ix35AnwActive) {
-            throw IOException(
-                "ix35 ANW requires the head unit's real Bluetooth MAC address; " +
-                    "the system resolver returned no hardware BD_ADDR",
-            )
-        }
-        throw IOException("Accessory Bluetooth MAC address is unavailable")
+        val address = managerAddress ?: BluetoothAddressResolver.resolve(appContext)
+        return address ?: airPlayConfig.btMac
     }
 
     private fun hostAddressText(address: InetAddress): String {
