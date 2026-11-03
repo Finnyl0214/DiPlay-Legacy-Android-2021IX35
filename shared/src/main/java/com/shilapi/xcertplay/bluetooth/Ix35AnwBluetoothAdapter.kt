@@ -15,6 +15,14 @@ import java.io.IOException
  * supply the already-paired iPhone MAC explicitly.
  */
 class Ix35AnwBluetoothAdapter(private val context: Context) : CarPlayBluetooth {
+    @Volatile
+    private var diagnosticSink: (String) -> Unit = {}
+
+    /** Attach the current CarPlay session logger without coupling the transport to an Activity. */
+    fun setDiagnosticSink(sink: (String) -> Unit) {
+        diagnosticSink = sink
+    }
+
     companion object {
         const val SERVICE_PACKAGE = "com.anwbtsdk.service"
         private val ADDRESS_PATTERN = Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
@@ -41,6 +49,8 @@ class Ix35AnwBluetoothAdapter(private val context: Context) : CarPlayBluetooth {
         if (!ADDRESS_PATTERN.matches(deviceAddress)) {
             throw IOException("Invalid paired iPhone Bluetooth address")
         }
-        return Ix35AnwSocketStream.connect(context.applicationContext, deviceAddress, uuid)
+        return Ix35AnwSocketStream.connect(context.applicationContext, deviceAddress, uuid) { message ->
+            runCatching { diagnosticSink(message) }
+        }
     }
 }
