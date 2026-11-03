@@ -79,8 +79,8 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
         layout.addView(TextView(this).apply {
             text = when {
                 usingUsb -> getString(R.string.settings_usb_bluetooth_diagnostic_description)
-                usingAnw -> "ix35 原厂 ANW 蓝牙只读诊断\\n仅查询原厂蓝牙服务状态、蓝牙电源状态和当前已连接的 HFP 手机。不执行搜索、配对、连接、断开或配置，也不发送数据。无需 MFi 身份文件或 Wi-Fi 热点。"
-                else -> "完整蓝牙诊断\\n一次采集权限、蓝牙状态、服务发现、两种连接及前后系统日志。每种连接最多 45 秒，只打开通道，不发送数据；超时后自动释放独立诊断进程。无需热点。系统日志需要已授权的本机 ADB；不可用时会明确注明。完成后在本页保存完整报告。"
+                usingAnw -> "ix35 原厂 ANW 蓝牙只读诊断\n仅查询原厂蓝牙服务状态、蓝牙电源状态和当前已连接的 HFP 手机。不执行搜索、配对、连接、断开或配置，也不发送数据。无需 MFi 身份文件或 Wi-Fi 热点。"
+                else -> "完整蓝牙诊断\n一次采集权限、蓝牙状态、服务发现、两种连接及前后系统日志。每种连接最多 45 秒，只打开通道，不发送数据；超时后自动释放独立诊断进程。无需热点。系统日志需要已授权的本机 ADB；不可用时会明确注明。完成后在本页保存完整报告。"
             }
         })
         modeSelector = Spinner(this).apply {
@@ -147,18 +147,18 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
             try {
                 val adapter = CarPlayBluetoothManager.get(applicationContext).ix35Anw
                     ?: error("ix35 ANW adapter is unavailable")
-                record("ix35 ANW read-only diagnostic; Android=\${Build.VERSION.RELEASE}; model=\${Build.MODEL}")
-                record("ANW service package present=\${adapter.isSupported()}")
+                record("ix35 ANW read-only diagnostic; Android=${Build.VERSION.RELEASE}; model=${Build.MODEL}")
+                record("ANW service package present=${adapter.isSupported()}")
                 val radio = adapter.readRadioPowerState()
-                record("ANW Bluetooth radio state=\${when (radio) { true -> "ON"; false -> "OFF"; null -> "unavailable" }}")
+                record("ANW Bluetooth radio state=${when (radio) { true -> "ON"; false -> "OFF"; null -> "unavailable" }}")
                 val phone = adapter.getConnectedDevice()
                 val addressValid = phone?.address?.matches(Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")) == true
-                val nameAvailable = phone?.name?.isNotBlank() == true && phone.name != "iPhone"
-                record("ANW HFP connected phone=\${phone != null}; addressValid=$addressValid; nameAvailable=$nameAvailable")
+                val nameAvailable = phone?.name?.let { it.isNotBlank() && it != "iPhone" } == true
+                record("ANW HFP connected phone=${phone != null}; addressValid=$addressValid; nameAvailable=$nameAvailable")
                 record("ANW socket/iAP2 transport=NOT TESTED; no socket init/connect/disconnect/write was performed")
                 record("Read-only diagnostic complete. This verifies Binder read paths only, not iAP2 or CarPlay authentication.")
             } catch (error: Exception) {
-                record("ANW read-only diagnostic error \${error.javaClass.simpleName}: \${error.message}")
+                record("ANW read-only diagnostic error ${error.javaClass.simpleName}: ${error.message}")
             } finally {
                 busy = false
                 runOnUiThread { if (!isFinishing) start.isEnabled = true }
