@@ -10,6 +10,7 @@ import com.shilapi.xcertplay.compat.BluetoothCompat
 import com.shilapi.xcertplay.compat.realSdkInt
 import com.shilapi.xcertplay.media.musicVolumeWarning
 import com.shilapi.xcertplay.bluetooth.BluetoothAddressResolver
+import com.shilapi.xcertplay.bluetooth.CarPlayBluetoothDevice
 import com.shilapi.xcertplay.bluetooth.CarPlayBluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.ComponentName
