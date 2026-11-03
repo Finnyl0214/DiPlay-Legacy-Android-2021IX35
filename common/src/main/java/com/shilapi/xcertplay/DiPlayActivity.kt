@@ -153,6 +153,7 @@ class DiPlayActivity : ComponentActivity() {
     private var pendingCarHotspotSetup = false
     private var hotspotJoinControls: HotspotJoinControls? = null
     private var setupError: String? = null
+    private var setupFailure: Throwable? = null
     private var status: TextView? = null
     private var connectButton: Button? = null
     private var disconnectButton: Button? = null
@@ -314,7 +315,10 @@ class DiPlayActivity : ComponentActivity() {
                 hide(WindowInsetsCompat.Type.statusBars())
             }
         }
-        setupError = runCatching { DiPlayBootstrap.ensure(this, AirPlayPersistence.loadMfiTarget(this)) }.exceptionOrNull()?.let {
+        setupFailure = runCatching {
+            DiPlayBootstrap.ensure(this, AirPlayPersistence.loadMfiTarget(this))
+        }.exceptionOrNull()
+        setupError = setupFailure?.let {
             android.util.Log.e("DiPlaySetup", "CarPlay authentication could not be loaded", it)
             getString(R.string.setup_error_auth)
         }
@@ -4783,6 +4787,15 @@ class DiPlayActivity : ComponentActivity() {
         appendLine("Connection: ${if (AirPlayPersistence.loadWirelessEnabled(appContext)) "wireless" else "USB"}")
         appendLine("Authentication: local experimental beta identity; no remote fallback")
         appendLine("CarPlay setup: ${if (setupError == null) "ready" else "authentication unavailable"}")
+        setupFailure?.let { failure ->
+            val chain = generateSequence(failure) { it.cause }
+                .take(5)
+                .joinToString(" <- ") { cause ->
+                    "${cause.javaClass.simpleName}: ${cause.message.orEmpty().take(240)}"
+                }
+            appendLine("CarPlay setup failure detail: ${DiagnosticRedactor.redact(chain) ?: "details redacted"}")
+            appendLine("Transport execution eligibility: blocked before controller startup; ANW Socket was not attempted")
+        } ?: appendLine("Transport execution eligibility: controller startup permitted")
         appendLine("Saved video preference (may differ from active session): ${if (AirPlayPersistence.loadHevcEnabled(appContext)) "HEVC" else "H.264"}; ${AirPlayPersistence.loadFps(appContext)} fps")
         appendLine("CarPlay size: ${com.shilapi.xcertplay.airplay.CarPlaySize.fromWidthMillimeters(AirPlayPersistence.loadWidthPhysicalMm(appContext)).label}")
         appendLine("Saved resolution preference (may differ from active session): ${AirPlayPersistence.loadDisplayScalePercent(appContext)}%")
