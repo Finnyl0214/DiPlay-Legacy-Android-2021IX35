@@ -1590,11 +1590,24 @@ class CarPlayController(
             val ix35AnwActive = hybridAdapter.ix35Anw?.isSupported() == true
             val device = try {
                 when {
-                    ix35AnwActive && hasManualPhoneAddress ->
-                        CarPlayBluetoothDevice("iPhone", manualPhoneAddress!!)
                     ix35AnwActive -> {
-                        debugLog("ix35 ANW backend requires the already-paired iPhone MAC to be saved manually")
-                        null
+                        val discovered = runCatching {
+                            hybridAdapter.ix35Anw?.getConnectedDevice()
+                        }.getOrNull()
+                        when {
+                            discovered != null -> {
+                                debugLog("ix35 ANW automatically discovered the connected HFP phone")
+                                discovered
+                            }
+                            hasManualPhoneAddress -> {
+                                debugLog("ix35 ANW HFP discovery returned no active phone; using saved address fallback")
+                                CarPlayBluetoothDevice("iPhone", manualPhoneAddress!!)
+                            }
+                            else -> {
+                                debugLog("ix35 ANW found no active HFP phone; connect the iPhone in the factory Bluetooth UI")
+                                null
+                            }
+                        }
                     }
                     adapter != null &&
                         (adapter.isEnabled || hybridAdapter.isEnabled() || hasManualPhoneAddress) ->
