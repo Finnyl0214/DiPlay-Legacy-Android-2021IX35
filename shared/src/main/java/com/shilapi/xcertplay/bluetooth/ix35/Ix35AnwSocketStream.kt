@@ -301,6 +301,7 @@ class Ix35AnwSocketStream private constructor(
         private const val TRANSACTION_SOCKET_WRITE = 228
         private const val TRANSACTION_REGISTER_SOCKET_CALLBACK = 232
         private const val TRANSACTION_UNREGISTER_SOCKET_CALLBACK = 233
+        private const val TRANSACTION_GET_SOCKET_INIT_STATUS = 234
         private const val CALLBACK_TRANSACTION_DATA_IND = 1
         private const val MAX_WRITE_CHUNK = 4096
         private const val MAX_PENDING_BYTES = 1024 * 1024
@@ -336,6 +337,10 @@ class Ix35AnwSocketStream private constructor(
                 if (!latch.await(5, TimeUnit.SECONDS)) throw IOException("Timed out binding ix35 ANW service")
                 val remote = binder ?: throw IOException("ix35 ANW service returned a null Binder")
                 if (!remote.isBinderAlive) throw IOException("ix35 ANW Binder is not alive")
+                // This reports the ANW socket subsystem state, not Bluetooth RF power.
+                // The AIDL defines ANWBT_GetSocketInitStatus at transaction 234.
+                val socketSubsystemInitialized = transact(remote, TRANSACTION_GET_SOCKET_INIT_STATUS, write = {}) != 0
+                Log.i(TAG, "ANW socket subsystem initialized before SocketInit=$socketSubsystemInitialized")
                 val socketCallback = SocketCallback()
                 callback = socketCallback
                 transactVoid(remote, TRANSACTION_REGISTER_SOCKET_CALLBACK) { writeStrongBinder(socketCallback) }
