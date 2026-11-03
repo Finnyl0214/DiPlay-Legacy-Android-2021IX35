@@ -4660,12 +4660,23 @@ class DiPlayActivity : ComponentActivity() {
         ix35ProbeRunning = true
         toast("开始 ix35 ANW 传输诊断")
         Thread({
-            val logFile = SessionLogFile(File(filesDir, "logs/ix35-anw-probe.log"))
+            val logFile = File(filesDir, "logs/ix35-anw-probe.log")
+            val logLock = Any()
+            runCatching {
+                logFile.parentFile?.mkdirs()
+                logFile.writeText("")
+            }
+            val logWriter = BoundedDiagnosticWriter<String> { line ->
+                synchronized(logLock) {
+                    if (logFile.length() < 128 * 1024L) logFile.appendText(line + "\n")
+                }
+            }
             var stream: com.shilapi.xcertplay.transport.BlockingDuplexByteStream? = null
             var outcome = "unknown"
-            logFile.reset("ix35 ANW transport-only probe started; no protocol payload will be sent")
             fun log(message: String) {
-                AsyncDiagnosticLog.append(logFile, message)
+                val safe = DiagnosticRedactor.redact(message) ?: return
+                val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+                logWriter.enqueue("$timestamp  $safe")
             }
             try {
                 adapter.setDiagnosticSink { message -> AsyncDiagnosticLog.append(logFile, message) }
@@ -4695,8 +4706,8 @@ class DiPlayActivity : ComponentActivity() {
                 runCatching { stream?.close() }
                 log("ANW-PROBE event=complete outcome=$outcome protocolPayloadSent=false")
                 adapter.setDiagnosticSink {}
-                AsyncDiagnosticLog.awaitIdle(5000L)
-                logFile.close()
+                logWriter.awaitIdle(5000L)
+                logWriter.close()
                 ix35ProbeRunning = false
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed) {
