@@ -15,6 +15,7 @@ object CarPlayBluetoothManager {
                 // USB dongle stack: constructed lazily; enable() is opt-in and
                 // only auto-runs when no other stack exists (see Hybrid).
                 UsbBtBluetoothAdapter(context.applicationContext),
+                Ix35AnwBluetoothAdapter(context.applicationContext),
             ).also { instance = it }
         }
     }
