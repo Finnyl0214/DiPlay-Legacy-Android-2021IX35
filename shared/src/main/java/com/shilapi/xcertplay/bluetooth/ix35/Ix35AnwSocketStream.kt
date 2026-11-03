@@ -118,16 +118,20 @@ class Ix35AnwSocketStream private constructor(
             closed = true
             lock.notifyAll()
         }
+        // Stop delivering data immediately, but keep the callback registered until
+        // Disconnect has completed. This matches the order used by the read-only
+        // device audit and prevents teardown callbacks from being queued again.
         callback.detach()
+        try {
+            val result = transactInt(TRANSACTION_SOCKET_DISCONNECT, write = { writeInt(socketIndex) })
+            if (result < 0) Log.w(TAG, "ANW socket disconnect returned $result")
+        } catch (e: Exception) {
+            Log.w(TAG, "ANW socket disconnect failed", e)
+        }
         try {
             transactVoid(TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) }
         } catch (e: Exception) {
             Log.w(TAG, "ANW callback unregister failed", e)
-        }
-        try {
-            transactInt(TRANSACTION_SOCKET_DISCONNECT, write = { writeInt(socketIndex) })
-        } catch (e: Exception) {
-            Log.w(TAG, "ANW socket disconnect failed", e)
         }
         // SocketInit allocates service-side state; release it after disconnect
         // on the normal close path as well as on connection failures.
@@ -184,6 +188,7 @@ class Ix35AnwSocketStream private constructor(
         private var pendingBytes = 0
         private var expectedIndex = -1
         private var receiver: ((ByteArray, Int) -> Unit)? = null
+        private var detached = false
 
         init { attachInterface(this, CALLBACK_DESCRIPTOR) }
         override fun asBinder(): IBinder = this
@@ -191,6 +196,7 @@ class Ix35AnwSocketStream private constructor(
         fun attach(index: Int, target: (ByteArray, Int) -> Unit) {
             val buffered = ArrayList<Pair<Int, ByteArray>>()
             synchronized(callbackLock) {
+                if (detached) return
                 expectedIndex = index
                 receiver = target
                 while (!pending.isEmpty()) buffered.add(pending.removeFirst())
@@ -202,13 +208,19 @@ class Ix35AnwSocketStream private constructor(
         }
 
         fun detach() {
-            synchronized(callbackLock) { receiver = null }
+            synchronized(callbackLock) {
+                detached = true
+                receiver = null
+                pending.clear()
+                pendingBytes = 0
+            }
         }
 
         private fun dispatch(index: Int, bytes: ByteArray, length: Int) {
             if (length <= 0 || length > bytes.size) return
             val target: ((ByteArray, Int) -> Unit)?
             synchronized(callbackLock) {
+                if (detached) return
                 target = receiver
                 if (target == null) {
                     if (pendingBytes + length <= MAX_PENDING_BYTES) {
@@ -291,7 +303,10 @@ class Ix35AnwSocketStream private constructor(
             }
             if (!bound) throw IOException("ix35 ANW service bindService returned false")
             var callback: SocketCallback? = null
+            var callbackRegistered = false
             var socketInitialized = false
+            var socketConnected = false
+            var connectedSocketIndex = -1
             try {
                 if (!latch.await(5, TimeUnit.SECONDS)) throw IOException("Timed out binding ix35 ANW service")
                 val remote = binder ?: throw IOException("ix35 ANW service returned a null Binder")
@@ -299,6 +314,7 @@ class Ix35AnwSocketStream private constructor(
                 val socketCallback = SocketCallback()
                 callback = socketCallback
                 transactVoid(remote, TRANSACTION_REGISTER_SOCKET_CALLBACK) { writeStrongBinder(socketCallback) }
+                callbackRegistered = true
                 val initResult = transact(remote, TRANSACTION_SOCKET_INIT, write = {})
                 if (initResult < 0) throw IOException("ANWBT_SocketInit returned $initResult")
                 socketInitialized = true
@@ -321,12 +337,23 @@ class Ix35AnwSocketStream private constructor(
                 if (connectResult < 0 || index[0] < 0) {
                     throw IOException("ANWBT_SocketConnect failed ret=$connectResult index=${index[0]}")
                 }
+                connectedSocketIndex = index[0]
+                socketConnected = true
                 val stream = Ix35AnwSocketStream(appContext, remote, serviceConnection, index[0], socketCallback)
                 socketCallback.attach(index[0]) { bytes, length -> stream.enqueue(bytes, length) }
                 Log.i(TAG, "ix35 ANW Socket connected ret=$connectResult index=${index[0]}")
                 return stream
             } catch (e: Exception) {
-                runCatching { transactVoid(binder, TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) } }
+                if (socketConnected) {
+                    runCatching {
+                        transact(binder, TRANSACTION_SOCKET_DISCONNECT, write = { writeInt(connectedSocketIndex) })
+                    }
+                }
+                if (callbackRegistered) {
+                    runCatching {
+                        transactVoid(binder, TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) }
+                    }
+                }
                 if (socketInitialized) runCatching { transact(binder, TRANSACTION_SOCKET_DENIT, write = {}) }
                 runCatching { appContext.unbindService(serviceConnection) }
                 if (e is IOException) throw e
