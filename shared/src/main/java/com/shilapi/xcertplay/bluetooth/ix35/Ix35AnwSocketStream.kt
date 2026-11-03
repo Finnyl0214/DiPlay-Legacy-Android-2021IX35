@@ -129,6 +129,13 @@ class Ix35AnwSocketStream private constructor(
         } catch (e: Exception) {
             Log.w(TAG, "ANW socket disconnect failed", e)
         }
+        // SocketInit allocates service-side state; release it after disconnect
+        // on the normal close path as well as on connection failures.
+        try {
+            transactInt(TRANSACTION_SOCKET_DENIT)
+        } catch (e: Exception) {
+            Log.w(TAG, "ANW socket deinit failed", e)
+        }
         try {
             context.unbindService(connection)
         } catch (e: Exception) {
