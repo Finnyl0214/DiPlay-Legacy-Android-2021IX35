@@ -4653,7 +4653,7 @@ class DiPlayActivity : ComponentActivity() {
         }
         val address = DiPlayPreferences.phoneAddress(this)
         if (address.isNullOrBlank() || !BluetoothAdapter.checkBluetoothAddress(address)) {
-            toast("请先保存已配对 iPhone 的蓝牙 MAC 地址")
+            promptManualBluetoothInput()
             return
         }
 
