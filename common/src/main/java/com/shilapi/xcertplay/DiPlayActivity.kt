@@ -4794,7 +4794,7 @@ class DiPlayActivity : ComponentActivity() {
                     "${cause.javaClass.simpleName}: ${cause.message.orEmpty().take(240)}"
                 }
             appendLine("CarPlay setup failure detail: ${DiagnosticRedactor.redact(chain) ?: "details redacted"}")
-            appendLine("Transport execution eligibility: blocked before controller startup; ANW Socket was not attempted")
+            appendLine("Transport execution eligibility: manual connect is blocked before controller startup; ANW activity is not established by this report")
         } ?: appendLine("Transport execution eligibility: controller startup permitted")
         appendLine("Saved video preference (may differ from active session): ${if (AirPlayPersistence.loadHevcEnabled(appContext)) "HEVC" else "H.264"}; ${AirPlayPersistence.loadFps(appContext)} fps")
         appendLine("CarPlay size: ${com.shilapi.xcertplay.airplay.CarPlaySize.fromWidthMillimeters(AirPlayPersistence.loadWidthPhysicalMm(appContext)).label}")
