@@ -153,6 +153,8 @@ class DiPlayActivity : ComponentActivity() {
     private var pendingCarHotspotSetup = false
     private var hotspotJoinControls: HotspotJoinControls? = null
     private var setupError: String? = null
+    private var setupFailure: Throwable? = null
+    @Volatile private var ix35ProbeRunning = false
     private var status: TextView? = null
     private var connectButton: Button? = null
     private var disconnectButton: Button? = null
@@ -314,7 +316,10 @@ class DiPlayActivity : ComponentActivity() {
                 hide(WindowInsetsCompat.Type.statusBars())
             }
         }
-        setupError = runCatching { DiPlayBootstrap.ensure(this, AirPlayPersistence.loadMfiTarget(this)) }.exceptionOrNull()?.let {
+        setupFailure = runCatching {
+            DiPlayBootstrap.ensure(this, AirPlayPersistence.loadMfiTarget(this))
+        }.exceptionOrNull()
+        setupError = setupFailure?.let {
             android.util.Log.e("DiPlaySetup", "CarPlay authentication could not be loaded", it)
             getString(R.string.setup_error_auth)
         }
@@ -1361,6 +1366,9 @@ class DiPlayActivity : ComponentActivity() {
             // 蓝牙诊断：SDP/RFCOMM 有界探针，排查原生蓝牙配对冲突类问题（port 自 xiaomiren/DiPlay）。
             card.addView(button(getString(R.string.settings_bluetooth_diagnostic), false) {
                 openBluetoothDiagnostics()
+            }, matchButton(10, 60))
+            card.addView(button("测试 ix35 ANW 蓝牙传输（只连接和监听，不发送协议数据）", false) {
+                runIx35AnwTransportProbe()
             }, matchButton(10, 60))
             val destination = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) getString(R.string.reports_save_to_downloads_diplay) else getString(R.string.choose_where_to_save_your_report)
             card.addView(label(destination + getString(R.string.nothing_is_sent_automatically_protocol_payloads_and_creden), 14, MUTED).apply { setPadding(0, dp(12), 0, 0) })
@@ -4624,6 +4632,104 @@ class DiPlayActivity : ComponentActivity() {
         runCatching { startActivity(Intent(this, BluetoothDiagnosticActivity::class.java)) }
     }
 
+    /**
+     * Opt-in transport-only probe for the ix35 factory ANW socket. It deliberately
+     * sends no iAP2/MFi/CarPlay payload, so it can run even when authentication
+     * assets are unavailable and cannot be mistaken for a CarPlay session test.
+     */
+    private fun runIx35AnwTransportProbe() {
+        if (ix35ProbeRunning) {
+            toast("ix35 ANW 传输诊断正在运行")
+            return
+        }
+        if (CarPlayBackgroundSession.hasSession()) {
+            toast("请先停止当前 CarPlay 会话，再执行传输诊断")
+            return
+        }
+        val adapter = CarPlayBluetoothManager.get(this).ix35Anw
+        if (adapter?.isSupported() != true) {
+            toast("未检测到原厂 ANW 蓝牙服务")
+            return
+        }
+        val savedAddress = DiPlayPreferences.phoneAddress(this)
+
+        ix35ProbeRunning = true
+        toast("开始 ix35 ANW 传输诊断")
+        Thread({
+            val logFile = File(filesDir, "logs/ix35-anw-probe.log")
+            val logLock = Any()
+            runCatching {
+                logFile.parentFile?.mkdirs()
+                logFile.writeText("")
+            }
+            val logWriter = BoundedDiagnosticWriter<String> { line ->
+                synchronized(logLock) {
+                    if (logFile.length() < 128 * 1024L) logFile.appendText(line + "\n")
+                }
+            }
+            var stream: com.shilapi.xcertplay.transport.BlockingDuplexByteStream? = null
+            var outcome = "unknown"
+            var promptManualFallback = false
+            fun log(message: String) {
+                val safe = DiagnosticRedactor.redact(message) ?: return
+                val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+                logWriter.enqueue("$timestamp  $safe")
+            }
+            try {
+                log("ANW-PROBE event=start mode=connect-listen-only payloadWrites=disabled")
+                val discovered = runCatching { adapter.getConnectedDevice() }.getOrNull()
+                val address = discovered?.address
+                    ?.takeIf { BluetoothAdapter.checkBluetoothAddress(it) }
+                    ?: savedAddress?.takeIf { BluetoothAdapter.checkBluetoothAddress(it) }
+                if (address.isNullOrBlank()) {
+                    outcome = "no-connected-hfp-phone"
+                    promptManualFallback = true
+                    log("ANW-PROBE event=phone-discovery result=not-found")
+                } else {
+                    log("ANW-PROBE event=phone-discovery result=found source=${if (discovered != null) "ANW-HFP" else "saved-fallback"}")
+                    adapter.setDiagnosticSink { message -> log("ANW-TRANSPORT $message") }
+                    val connectedStream = adapter.openRfcommStream(address, "00000000-deca-fade-deca-deafdecacafe")
+                    stream = connectedStream
+                    log("ANW-PROBE event=socket-connected result=true")
+                    val received = connectedStream.recv(4096, 3000L)
+                    when {
+                        received == null -> {
+                            outcome = "connected-no-callback-data"
+                            log("ANW-PROBE event=receive-timeout timeoutMs=3000")
+                        }
+                        received.isEmpty() -> {
+                            outcome = "peer-closed"
+                            log("ANW-PROBE event=stream-ended")
+                        }
+                        else -> {
+                            outcome = "callback-data-received"
+                            log("ANW-PROBE event=receive-data bytes=${received.size}")
+                        }
+                    }
+                }
+            } catch (error: Throwable) {
+                outcome = "failed-${error.javaClass.simpleName}"
+                log("ANW-PROBE event=failed error=${error.javaClass.simpleName}")
+            } finally {
+                runCatching { stream?.close() }
+                log("ANW-PROBE event=complete outcome=$outcome protocolPayloadSent=false")
+                adapter.setDiagnosticSink {}
+                logWriter.awaitIdle(5000L)
+                logWriter.close()
+                ix35ProbeRunning = false
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        if (promptManualFallback) promptManualBluetoothInput()
+                        else toast("ix35 ANW 诊断结束：$outcome；请导出诊断报告")
+                    }
+                }
+            }
+        }, "ix35-anw-transport-probe").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
     private fun wirelessHelp() {
         AlertDialog.Builder(this).setTitle(getString(R.string.wireless_connection_help))
             .setMessage(getString(R.string.pair_your_iphone_with_the_car_s_bluetooth_keep_wi_fi_on_an))
@@ -4760,7 +4866,7 @@ class DiPlayActivity : ComponentActivity() {
         appendLine("Head unit: ${Build.MANUFACTURER} ${Build.MODEL}")
         appendLine("Full report build failed: ${buildError.javaClass.simpleName}: ${buildError.message}")
         appendLine()
-        val names = listOf("bluetooth-diagnostic.log") + SessionLogFile.REPORT_NAMES.toList()
+        val names = listOf("ix35-anw-probe.log", "bluetooth-diagnostic.log") + SessionLogFile.REPORT_NAMES.toList()
         names.forEach { name ->
             val file = File(filesDir, "logs/$name")
             if (file.isFile) {
@@ -4783,6 +4889,15 @@ class DiPlayActivity : ComponentActivity() {
         appendLine("Connection: ${if (AirPlayPersistence.loadWirelessEnabled(appContext)) "wireless" else "USB"}")
         appendLine("Authentication: local experimental beta identity; no remote fallback")
         appendLine("CarPlay setup: ${if (setupError == null) "ready" else "authentication unavailable"}")
+        setupFailure?.let { failure ->
+            val chain = generateSequence(failure) { it.cause }
+                .take(5)
+                .joinToString(" <- ") { cause ->
+                    "${cause.javaClass.simpleName}: ${cause.message.orEmpty().take(240)}"
+                }
+            appendLine("CarPlay setup failure detail: ${DiagnosticRedactor.redact(chain) ?: "details redacted"}")
+            appendLine("Transport execution eligibility: manual connect is blocked before controller startup; ANW activity is not established by this report")
+        } ?: appendLine("Transport execution eligibility: controller startup permitted")
         appendLine("Saved video preference (may differ from active session): ${if (AirPlayPersistence.loadHevcEnabled(appContext)) "HEVC" else "H.264"}; ${AirPlayPersistence.loadFps(appContext)} fps")
         appendLine("CarPlay size: ${com.shilapi.xcertplay.airplay.CarPlaySize.fromWidthMillimeters(AirPlayPersistence.loadWidthPhysicalMm(appContext)).label}")
         appendLine("Saved resolution preference (may differ from active session): ${AirPlayPersistence.loadDisplayScalePercent(appContext)}%")
@@ -4838,7 +4953,7 @@ class DiPlayActivity : ComponentActivity() {
         appendLine("--- Recent own-app process exits (Android 11+) ---")
         appendLine(ProcessExitDiagnostics.report(appContext))
         appendLine()
-        val logFiles = listOf("bluetooth-diagnostic.log") + SessionLogFile.REPORT_NAMES
+        val logFiles = listOf("ix35-anw-probe.log", "bluetooth-diagnostic.log") + SessionLogFile.REPORT_NAMES
         for (name in logFiles) {
             val file = File(appContext.filesDir, "logs/$name")
             if (file.isFile) {

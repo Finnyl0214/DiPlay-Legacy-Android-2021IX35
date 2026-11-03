@@ -10,6 +10,7 @@ import com.shilapi.xcertplay.compat.BluetoothCompat
 import com.shilapi.xcertplay.compat.realSdkInt
 import com.shilapi.xcertplay.media.musicVolumeWarning
 import com.shilapi.xcertplay.bluetooth.BluetoothAddressResolver
+import com.shilapi.xcertplay.bluetooth.CarPlayBluetoothDevice
 import com.shilapi.xcertplay.bluetooth.CarPlayBluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.ComponentName
@@ -847,6 +848,8 @@ class CarPlayController(
                         "teardown end elapsedMs=${elapsedMillis(teardownStarted)} " +
                             "executorTerminated=$executorTerminated",
                     )
+                    // The singleton adapter must not retain this controller/Activity after teardown.
+                    CarPlayBluetoothManager.get(appContext).ix35Anw?.setDiagnosticSink {}
                     teardownComplete.countDown()
                 }
             },
@@ -1553,6 +1556,10 @@ class CarPlayController(
 
             val adapter = bluetoothAdapter
             val hybridAdapter = CarPlayBluetoothManager.get(appContext)
+            hybridAdapter.ix35Anw?.setDiagnosticSink { message -> debugLog(message) }
+            if (hybridAdapter.ix35Anw?.isSupported() == true) {
+                debugLog("ANW-TRANSPORT event=diagnostic-sink-attached")
+            }
             if (adapter != null && !adapter.isEnabled) {
                 runCatching { adapter.enable() }
                 // Upstream #822: wait only while the adapter is actually turning on;
@@ -1579,14 +1586,35 @@ class CarPlayController(
             // (getRemoteDevice needs no enabled adapter), so let it run in that case.
             val manualPhoneAddress = config.wirelessBluetoothDeviceAddress
             val hasManualPhoneAddress = !manualPhoneAddress.isNullOrBlank() &&
-                BluetoothAdapter.checkBluetoothAddress(manualPhoneAddress)
+                Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$").matches(manualPhoneAddress)
+            val ix35AnwActive = hybridAdapter.ix35Anw?.isSupported() == true
             val device = try {
-                if (adapter != null &&
-                    (adapter.isEnabled || hybridAdapter.isEnabled() || hasManualPhoneAddress)
-                ) {
-                    selectWirelessBluetoothDevice(adapter)
-                } else {
-                    null
+                when {
+                    ix35AnwActive -> {
+                        val discovered = runCatching {
+                            hybridAdapter.ix35Anw?.getConnectedDevice()
+                        }.getOrNull()
+                        when {
+                            discovered != null -> {
+                                debugLog("ix35 ANW automatically discovered the connected HFP phone")
+                                discovered
+                            }
+                            hasManualPhoneAddress -> {
+                                debugLog("ix35 ANW HFP discovery returned no active phone; using saved address fallback")
+                                CarPlayBluetoothDevice("iPhone", manualPhoneAddress!!)
+                            }
+                            else -> {
+                                debugLog("ix35 ANW found no active HFP phone; connect the iPhone in the factory Bluetooth UI")
+                                null
+                            }
+                        }
+                    }
+                    adapter != null &&
+                        (adapter.isEnabled || hybridAdapter.isEnabled() || hasManualPhoneAddress) ->
+                        selectWirelessBluetoothDevice(adapter).let {
+                            CarPlayBluetoothDevice(it.name ?: "iPhone", it.address, true)
+                        }
+                    else -> null
                 }
             } catch (error: Throwable) {
                 debugLog("wireless Bluetooth device selection not available: ${error.message}; proceeding with Wi-Fi discovery")
@@ -1594,7 +1622,7 @@ class CarPlayController(
             }
             val hostBluetoothMac = accessoryBluetoothMac(adapter)
             debugLog(
-                "wireless selected Bluetooth target targetAddress=${device?.address ?: "none"} localBt=$hostBluetoothMac",
+                "wireless selected Bluetooth target backend=${if (ix35AnwActive) "ix35-anw" else hybridAdapter.getAdapterName()} targetAddress=${device?.address ?: "none"} localBt=$hostBluetoothMac",
             )
             val wirelessAirPlayConfig = airPlayConfig.copy(
                 deviceId = deviceIdentifier,
@@ -1832,7 +1860,7 @@ class CarPlayController(
                     "wireless RFCOMM connecting address=${device.address} " +
                         "uuid=$IAP2_IPHONE_UUID",
                 )
-                logBluetoothConnectionSnapshot(device, "before-connect")
+                logBluetoothConnectionSnapshot(device.address, device.name, "before-connect")
                 val bluetoothStarted = System.nanoTime()
 
                 var stream: BlockingDuplexByteStream? = null
@@ -1853,7 +1881,7 @@ class CarPlayController(
                         stage = "Bluetooth RFCOMM connection"
                         wirelessChain(3, "RFCOMM connecting to iPhone (attempt $attempt/$maxAttempts)")
                         debugLog("wireless RFCOMM connecting (attempt $attempt/$maxAttempts) address=${device.address} uuid=$IAP2_IPHONE_UUID")
-                        logBluetoothConnectionSnapshot(device, "before-connect-$attempt")
+                        logBluetoothConnectionSnapshot(device.address, device.name, "before-connect-$attempt")
                         val currentStream = hybridAdapter.openRfcommStream(device.address, IAP2_IPHONE_UUID)
                         bluetoothStream = currentStream
                         stream = currentStream
@@ -3858,7 +3886,16 @@ class CarPlayController(
     }
 
     /** Reads cached service metadata only; it does not start/cancel discovery or require SCAN. */
-    private fun logBluetoothConnectionSnapshot(device: BluetoothDevice, point: String) {
+    private fun logBluetoothConnectionSnapshot(address: String, name: String, point: String) {
+        if (CarPlayBluetoothManager.get(appContext).ix35Anw?.isSupported() == true) {
+            connectionDiagnostic("Bluetooth snapshot point=$point backend=ix35-anw pairedTarget=$name address=$address androidBondState=unavailable")
+            return
+        }
+        val device = runCatching { bluetoothAdapter?.getRemoteDevice(address) }.getOrNull()
+            ?: run {
+                connectionDiagnostic("Bluetooth snapshot point=$point unavailable address=$address")
+                return
+            }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                 appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
