@@ -35,6 +35,8 @@ class Ix35AnwSocketStream private constructor(
     private var closed = false
     private var peerClosed = false
     private var failure: IOException? = null
+    private var firstReceiveLogged = false
+    private var firstWriteLogged = false
 
     private fun enqueue(bytes: ByteArray, length: Int) {
         if (length <= 0 || length > bytes.size) return
@@ -44,6 +46,10 @@ class Ix35AnwSocketStream private constructor(
                 failure = IOException("ANW receive queue exceeded $MAX_PENDING_BYTES bytes")
                 peerClosed = true
             } else {
+                if (!firstReceiveLogged) {
+                    firstReceiveLogged = true
+                    Log.i(TAG, "First ANW socket callback received bytes=$length")
+                }
                 incoming.addLast(if (length == bytes.size) bytes.copyOf() else bytes.copyOf(length))
                 incomingBytes += length
             }
@@ -87,6 +93,10 @@ class Ix35AnwSocketStream private constructor(
                     val io = IOException("ANWBT_SocketWrite returned invalid written=$actual, chunk=$count")
                     synchronized(lock) { failure = io }
                     throw io
+                }
+                if (!firstWriteLogged) {
+                    firstWriteLogged = true
+                    Log.i(TAG, "First ANW SocketWrite accepted ret=$result requested=$count reportedWritten=${written[0]} accepted=$actual")
                 }
                 offset += actual
             }
@@ -138,19 +148,21 @@ class Ix35AnwSocketStream private constructor(
         callback.detach()
         try {
             val result = transactInt(TRANSACTION_SOCKET_DISCONNECT, write = { writeInt(socketIndex) })
-            if (result < 0) Log.w(TAG, "ANW socket disconnect returned $result")
+            Log.i(TAG, "ANW socket disconnect returned $result")
         } catch (e: Exception) {
             Log.w(TAG, "ANW socket disconnect failed", e)
         }
         try {
             transactVoid(TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) }
+            Log.i(TAG, "ANW socket callback unregistered")
         } catch (e: Exception) {
             Log.w(TAG, "ANW callback unregister failed", e)
         }
         // SocketInit allocates service-side state; release it after disconnect
         // on the normal close path as well as on connection failures.
         try {
-            transactInt(TRANSACTION_SOCKET_DENIT)
+            val result = transactInt(TRANSACTION_SOCKET_DENIT)
+            Log.i(TAG, "ANW socket deinit returned $result")
         } catch (e: Exception) {
             Log.w(TAG, "ANW socket deinit failed", e)
         }
@@ -328,7 +340,9 @@ class Ix35AnwSocketStream private constructor(
                 callback = socketCallback
                 transactVoid(remote, TRANSACTION_REGISTER_SOCKET_CALLBACK) { writeStrongBinder(socketCallback) }
                 callbackRegistered = true
+                Log.i(TAG, "ANW socket callback registered")
                 val initResult = transact(remote, TRANSACTION_SOCKET_INIT, write = {})
+                Log.i(TAG, "ANW socket init returned $initResult")
                 if (initResult < 0) throw IOException("ANWBT_SocketInit returned $initResult")
                 socketInitialized = true
                 val index = intArrayOf(-1)
