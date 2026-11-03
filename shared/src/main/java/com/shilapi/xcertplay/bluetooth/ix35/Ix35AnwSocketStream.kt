@@ -80,16 +80,13 @@ class Ix35AnwSocketStream private constructor(
                     synchronized(lock) { failure = io }
                     throw io
                 }
-                // Match the upstream HSAE contract: some vendor implementations
-                // leave nWritten at zero even when the full chunk was accepted.
-                val actual = when {
-                    written[0] == 0 -> count
-                    written[0] in 1..count -> written[0]
-                    else -> {
-                        val io = IOException("ANWBT_SocketWrite returned invalid written=${written[0]}, chunk=$count")
-                        synchronized(lock) { failure = io }
-                        throw io
-                    }
+                // Match the upstream HSAE contract exactly: every non-positive
+                // nWritten value means the vendor accepted the complete chunk.
+                val actual = if (written[0] > 0) written[0] else count
+                if (actual > count) {
+                    val io = IOException("ANWBT_SocketWrite returned invalid written=$actual, chunk=$count")
+                    synchronized(lock) { failure = io }
+                    throw io
                 }
                 offset += actual
             }
