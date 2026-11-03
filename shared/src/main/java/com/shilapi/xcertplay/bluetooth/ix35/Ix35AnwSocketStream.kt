@@ -26,7 +26,8 @@ class Ix35AnwSocketStream private constructor(
     private val remote: IBinder,
     private val connection: ServiceConnection,
     private val socketIndex: Int,
-    private val callback: SocketCallback
+    private val callback: SocketCallback,
+    private val onDiagnostic: (String) -> Unit,
 ) : BlockingDuplexByteStream {
     private val lock = Object()
     private val writeLock = Object()
@@ -37,6 +38,17 @@ class Ix35AnwSocketStream private constructor(
     private var failure: IOException? = null
     private var firstReceiveLogged = false
     private var firstWriteLogged = false
+    private var firstReadLogged = false
+    private var callbackBytes = 0L
+    private var readCalls = 0L
+    private var readBytes = 0L
+    private var writeCalls = 0L
+    private var writeBytes = 0L
+
+    private fun report(message: String) {
+        runCatching { onDiagnostic("ANW-TRANSPORT $message") }
+        Log.i(TAG, message)
+    }
 
     private fun enqueue(bytes: ByteArray, length: Int) {
         if (length <= 0 || length > bytes.size) return
@@ -46,9 +58,10 @@ class Ix35AnwSocketStream private constructor(
                 failure = IOException("ANW receive queue exceeded $MAX_PENDING_BYTES bytes")
                 peerClosed = true
             } else {
+                callbackBytes += length
                 if (!firstReceiveLogged) {
                     firstReceiveLogged = true
-                    Log.i(TAG, "First ANW socket callback received bytes=$length")
+                    report("event=first-callback-data bytes=$length queuedBytes=$incomingBytes")
                 }
                 incoming.addLast(if (length == bytes.size) bytes.copyOf() else bytes.copyOf(length))
                 incomingBytes += length
@@ -94,9 +107,13 @@ class Ix35AnwSocketStream private constructor(
                     synchronized(lock) { failure = io }
                     throw io
                 }
+                writeCalls++
+                writeBytes += actual
                 if (!firstWriteLogged) {
                     firstWriteLogged = true
-                    Log.i(TAG, "First ANW SocketWrite accepted ret=$result requested=$count reportedWritten=${written[0]} accepted=$actual")
+                    report("event=first-write-accepted ret=$result requested=$count reportedWritten=${written[0]} accepted=$actual")
+                } else if (writeCalls % 64L == 0L) {
+                    report("event=write-progress calls=$writeCalls bytes=$writeBytes")
                 }
                 offset += actual
             }
@@ -111,15 +128,25 @@ class Ix35AnwSocketStream private constructor(
             while (true) {
                 val first = incoming.peekFirst()
                 if (first != null) {
+                    val part: ByteArray
                     if (first.size <= maxBytes) {
                         incoming.removeFirst()
                         incomingBytes -= first.size
-                        return first
+                        part = first
+                    } else {
+                        part = first.copyOf(maxBytes)
+                        incoming.removeFirst()
+                        incoming.addFirst(first.copyOfRange(maxBytes, first.size))
+                        incomingBytes -= maxBytes
                     }
-                    val part = first.copyOf(maxBytes)
-                    incoming.removeFirst()
-                    incoming.addFirst(first.copyOfRange(maxBytes, first.size))
-                    incomingBytes -= maxBytes
+                    readCalls++
+                    readBytes += part.size
+                    if (!firstReadLogged) {
+                        firstReadLogged = true
+                        report("event=first-read bytes=${part.size} callbackBytes=$callbackBytes")
+                    } else if (readCalls % 64L == 0L) {
+                        report("event=read-progress calls=$readCalls bytes=$readBytes")
+                    }
                     return part
                 }
                 failure?.let { throw it }
@@ -146,31 +173,33 @@ class Ix35AnwSocketStream private constructor(
         // Disconnect has completed. This matches the order used by the read-only
         // device audit and prevents teardown callbacks from being queued again.
         callback.detach()
+        report("event=close-start socketIndex=$socketIndex callbackBytes=$callbackBytes readCalls=$readCalls readBytes=$readBytes writeCalls=$writeCalls writeBytes=$writeBytes")
         try {
             val result = transactInt(TRANSACTION_SOCKET_DISCONNECT, write = { writeInt(socketIndex) })
-            Log.i(TAG, "ANW socket disconnect returned $result")
+            report("event=socket-disconnect result=$result")
         } catch (e: Exception) {
-            Log.w(TAG, "ANW socket disconnect failed", e)
+            report("event=socket-disconnect-failed error=${e.javaClass.simpleName}")
         }
         try {
             transactVoid(TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) }
-            Log.i(TAG, "ANW socket callback unregistered")
+            report("event=callback-unregistered")
         } catch (e: Exception) {
-            Log.w(TAG, "ANW callback unregister failed", e)
+            report("event=callback-unregister-failed error=${e.javaClass.simpleName}")
         }
         // SocketInit allocates service-side state; release it after disconnect
         // on the normal close path as well as on connection failures.
         try {
             val result = transactInt(TRANSACTION_SOCKET_DENIT)
-            Log.i(TAG, "ANW socket deinit returned $result")
+            report("event=socket-deinit result=$result")
         } catch (e: Exception) {
-            Log.w(TAG, "ANW socket deinit failed", e)
+            report("event=socket-deinit-failed error=${e.javaClass.simpleName}")
         }
         try {
             context.unbindService(connection)
         } catch (e: Exception) {
-            Log.w(TAG, "ANW service unbind failed", e)
+            report("event=service-unbind-failed error=${e.javaClass.simpleName}")
         }
+        report("event=close-complete socketIndex=$socketIndex callbackBytes=$callbackBytes readCalls=$readCalls readBytes=$readBytes writeCalls=$writeCalls writeBytes=$writeBytes")
     }
 
     private fun transactVoid(code: Int, write: Parcel.() -> Unit = {}) {
@@ -208,7 +237,16 @@ class Ix35AnwSocketStream private constructor(
         }
     }
 
-    private class SocketCallback : Binder(), IInterface {
+    private class SocketCallback(private val onDiagnostic: (String) -> Unit) : Binder(), IInterface {
+        private var callbackCount = 0L
+        private var callbackBytes = 0L
+        private var firstCallbackLogged = false
+        private var wrongSocketCallbacks = 0L
+
+        private fun report(message: String) {
+            runCatching { onDiagnostic("ANW-TRANSPORT $message") }
+            Log.i(TAG, message)
+        }
         private val callbackLock = Any()
         private val pending = ArrayDeque<Pair<Int, ByteArray>>()
         private var pendingBytes = 0
@@ -243,10 +281,21 @@ class Ix35AnwSocketStream private constructor(
         }
 
         private fun dispatch(index: Int, bytes: ByteArray, length: Int) {
-            if (length <= 0 || length > bytes.size) return
+            if (length <= 0 || length > bytes.size) {
+                report("event=callback-invalid-length length=$length arraySize=${bytes.size}")
+                return
+            }
             val target: ((ByteArray, Int) -> Unit)?
             synchronized(callbackLock) {
                 if (detached) return
+                callbackCount++
+                callbackBytes += length
+                if (!firstCallbackLogged) {
+                    firstCallbackLogged = true
+                    report("event=first-callback socketIndex=$index bytes=$length")
+                } else if (callbackCount % 64L == 0L) {
+                    report("event=callback-progress count=$callbackCount bytes=$callbackBytes")
+                }
                 target = receiver
                 if (target == null) {
                     if (pendingBytes + length <= MAX_PENDING_BYTES) {
@@ -258,7 +307,11 @@ class Ix35AnwSocketStream private constructor(
                     }
                     return
                 }
-                if (expectedIndex != index) return
+                if (expectedIndex != index) {
+                    wrongSocketCallbacks++
+                    if (wrongSocketCallbacks == 1L) report("event=callback-wrong-socket expected=$expectedIndex actual=$index")
+                    return
+                }
             }
             target?.invoke(bytes, length)
         }
@@ -309,7 +362,19 @@ class Ix35AnwSocketStream private constructor(
 
         /** Call from a worker thread; address must be the paired iPhone MAC. */
         @Throws(IOException::class)
-        fun connect(context: Context, address: String, uuidString: String): BlockingDuplexByteStream {
+        fun connect(
+            context: Context,
+            address: String,
+            uuidString: String,
+            onDiagnostic: (String) -> Unit = {},
+        ): BlockingDuplexByteStream {
+            fun report(message: String) {
+                runCatching { onDiagnostic("ANW-TRANSPORT $message") }
+                Log.i(TAG, message)
+            }
+            val connectStartedNanos = System.nanoTime()
+            var stage = "validate-address"
+            report("event=connect-start")
             require(address.matches(Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$"))) { "Invalid Bluetooth address" }
             val appContext = context.applicationContext
             val latch = CountDownLatch(1)
@@ -317,9 +382,13 @@ class Ix35AnwSocketStream private constructor(
             val serviceConnection = object : ServiceConnection {
                 override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
                     binder = service
+                    report("event=service-connected binderPresent=${service != null} binderAlive=${service?.isBinderAlive == true}")
                     latch.countDown()
                 }
-                override fun onServiceDisconnected(name: ComponentName?) { binder = null }
+                override fun onServiceDisconnected(name: ComponentName?) {
+                    binder = null
+                    report("event=service-disconnected")
+                }
             }
             val intent = Intent().setComponent(ComponentName(SERVICE_PACKAGE, SERVICE_CLASS))
             val bound = try {
@@ -327,6 +396,7 @@ class Ix35AnwSocketStream private constructor(
             } catch (e: Exception) {
                 throw IOException("Could not bind ix35 ANW service", e)
             }
+            report("event=bind-service result=$bound")
             if (!bound) throw IOException("ix35 ANW service bindService returned false")
             var callback: SocketCallback? = null
             var callbackRegistered = false
@@ -334,25 +404,31 @@ class Ix35AnwSocketStream private constructor(
             var socketConnected = false
             var connectedSocketIndex = -1
             try {
+                stage = "wait-for-binder"
                 if (!latch.await(5, TimeUnit.SECONDS)) throw IOException("Timed out binding ix35 ANW service")
                 val remote = binder ?: throw IOException("ix35 ANW service returned a null Binder")
                 if (!remote.isBinderAlive) throw IOException("ix35 ANW Binder is not alive")
                 // This reports the ANW socket subsystem state, not Bluetooth RF power.
                 // The AIDL defines ANWBT_GetSocketInitStatus at transaction 234.
-                val socketSubsystemInitialized = transact(remote, TRANSACTION_GET_SOCKET_INIT_STATUS, write = {}) != 0
-                Log.i(TAG, "ANW socket subsystem initialized before SocketInit=$socketSubsystemInitialized")
-                val socketCallback = SocketCallback()
+                stage = "get-socket-init-status"
+                val socketInitStatus = transact(remote, TRANSACTION_GET_SOCKET_INIT_STATUS, write = {})
+                val socketSubsystemInitialized = socketInitStatus != 0
+                report("event=socket-subsystem-status result=$socketInitStatus initialized=$socketSubsystemInitialized")
+                val socketCallback = SocketCallback(::report)
                 callback = socketCallback
+                stage = "register-callback"
                 transactVoid(remote, TRANSACTION_REGISTER_SOCKET_CALLBACK) { writeStrongBinder(socketCallback) }
                 callbackRegistered = true
-                Log.i(TAG, "ANW socket callback registered")
+                report("event=callback-registered")
+                stage = "socket-init"
                 val initResult = transact(remote, TRANSACTION_SOCKET_INIT, write = {})
-                Log.i(TAG, "ANW socket init returned $initResult")
+                report("event=socket-init result=$initResult")
                 if (initResult < 0) throw IOException("ANWBT_SocketInit returned $initResult")
                 socketInitialized = true
                 val index = intArrayOf(-1)
                 val guidBytes = uuidToGuidBytes(uuidString)
                 val rfcBytes = uuidToBytes(uuidString)
+                stage = "socket-connect-guid"
                 var connectResult = transact(
                     remote,
                     TRANSACTION_SOCKET_CONNECT,
@@ -367,11 +443,12 @@ class Ix35AnwSocketStream private constructor(
                     },
                     readTail = { reply -> reply.readIntArray(index) }
                 )
-                Log.i(TAG, "ANWBT_SocketConnect(GUID) returned $connectResult index=${index[0]}")
+                report("event=socket-connect-guid result=$connectResult socketIndex=${index[0]}")
                 // Keep the upstream HSAE compatibility fallback: some vendor
                 // builds expect the UUID in RFC byte order rather than GUID order.
                 if (connectResult < 0 || index[0] < 0) {
                     index[0] = -1
+                    stage = "socket-connect-rfc"
                     connectResult = transact(
                         remote,
                         TRANSACTION_SOCKET_CONNECT,
@@ -386,29 +463,35 @@ class Ix35AnwSocketStream private constructor(
                         },
                         readTail = { reply -> reply.readIntArray(index) }
                     )
-                    Log.i(TAG, "ANWBT_SocketConnect(RFC) returned $connectResult index=${index[0]}")
+                    report("event=socket-connect-rfc result=$connectResult socketIndex=${index[0]}")
                 }
                 if (connectResult < 0 || index[0] < 0) {
                     throw IOException("ANWBT_SocketConnect failed ret=$connectResult index=${index[0]}")
                 }
                 connectedSocketIndex = index[0]
                 socketConnected = true
-                val stream = Ix35AnwSocketStream(appContext, remote, serviceConnection, index[0], socketCallback)
+                val stream = Ix35AnwSocketStream(appContext, remote, serviceConnection, index[0], socketCallback, ::report)
                 socketCallback.attach(index[0]) { bytes, length -> stream.enqueue(bytes, length) }
-                Log.i(TAG, "ix35 ANW Socket connected ret=$connectResult index=${index[0]}")
+                report("event=socket-connected result=$connectResult socketIndex=${index[0]} elapsedMs=${(System.nanoTime() - connectStartedNanos) / 1_000_000L}")
                 return stream
             } catch (e: Exception) {
+                report("event=connect-failed stage=$stage error=${e.javaClass.simpleName} elapsedMs=${(System.nanoTime() - connectStartedNanos) / 1_000_000L}")
                 if (socketConnected) {
                     runCatching {
-                        transact(binder, TRANSACTION_SOCKET_DISCONNECT, write = { writeInt(connectedSocketIndex) })
-                    }
+                        val result = transact(binder, TRANSACTION_SOCKET_DISCONNECT, write = { writeInt(connectedSocketIndex) })
+                        report("event=failure-cleanup-disconnect result=$result")
+                    }.onFailure { report("event=failure-cleanup-disconnect-failed error=${it.javaClass.simpleName}") }
                 }
                 if (callbackRegistered) {
                     runCatching {
                         transactVoid(binder, TRANSACTION_UNREGISTER_SOCKET_CALLBACK) { writeStrongBinder(callback) }
-                    }
+                        report("event=failure-cleanup-callback-unregistered")
+                    }.onFailure { report("event=failure-cleanup-callback-unregister-failed error=${it.javaClass.simpleName}") }
                 }
-                if (socketInitialized) runCatching { transact(binder, TRANSACTION_SOCKET_DENIT, write = {}) }
+                if (socketInitialized) runCatching {
+                    val result = transact(binder, TRANSACTION_SOCKET_DENIT, write = {})
+                    report("event=failure-cleanup-socket-deinit result=$result")
+                }.onFailure { report("event=failure-cleanup-socket-deinit-failed error=${it.javaClass.simpleName}") }
                 runCatching { appContext.unbindService(serviceConnection) }
                 if (e is IOException) throw e
                 throw IOException("ix35 ANW Socket connection failed", e)
