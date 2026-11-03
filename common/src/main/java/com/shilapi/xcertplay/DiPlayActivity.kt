@@ -4670,9 +4670,10 @@ class DiPlayActivity : ComponentActivity() {
             try {
                 adapter.setDiagnosticSink { message -> AsyncDiagnosticLog.append(logFile, message) }
                 log("ANW-PROBE event=start mode=connect-listen-only payloadWrites=disabled")
-                stream = adapter.openRfcommStream(address, "00000000-deca-fade-deca-deafdecacafe")
+                val connectedStream = adapter.openRfcommStream(address, "00000000-deca-fade-deca-deafdecacafe")
+                stream = connectedStream
                 log("ANW-PROBE event=socket-connected result=true")
-                val received = stream.recv(4096, 3000L)
+                val received = connectedStream.recv(4096, 3000L)
                 when {
                     received == null -> {
                         outcome = "connected-no-callback-data"
