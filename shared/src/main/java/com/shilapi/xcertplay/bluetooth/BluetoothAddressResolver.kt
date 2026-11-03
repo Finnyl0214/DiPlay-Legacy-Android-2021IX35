@@ -83,22 +83,6 @@ object BluetoothAddressResolver {
 
     fun isValidMac(mac: String?): Boolean = normalize(mac) != null
 
-    /**
-     * Selects the accessory's real Bluetooth hardware address when a transport requires it.
-     * A generated AirPlay device ID may look like a MAC, but it is not the Bluetooth controller's
-     * BD_ADDR and must never be used for the ix35 ANW wireless identification exchange.
-     */
-    fun selectAccessoryAddress(
-        managerAddress: String?,
-        resolvedAddress: String?,
-        fallbackAddress: String?,
-        requireHardwareAddress: Boolean,
-    ): String? {
-        normalize(managerAddress)?.let { return it }
-        normalize(resolvedAddress)?.let { return it }
-        return if (requireHardwareAddress) null else fallbackAddress?.takeIf { it.isNotBlank() }
-    }
-
     @SuppressLint("MissingPermission")
     fun resolve(context: Context, customOverride: String? = null): String? {
         normalize(customOverride)?.let { return it }
