@@ -46,7 +46,7 @@ class Ix35AnwSocketStream private constructor(
     private var writeBytes = 0L
 
     private fun report(message: String) {
-        runCatching { onDiagnostic("ANW-TRANSPORT $message") }
+        runCatching { onDiagnostic(message) }
         Log.i(TAG, message)
     }
 
@@ -248,7 +248,7 @@ class Ix35AnwSocketStream private constructor(
         private var wrongSocketCallbacks = 0L
 
         private fun report(message: String) {
-            runCatching { onDiagnostic("ANW-TRANSPORT $message") }
+            runCatching { onDiagnostic(message) }
             Log.i(TAG, message)
         }
         private val callbackLock = Any()
@@ -375,8 +375,12 @@ class Ix35AnwSocketStream private constructor(
             uuidString: String,
             onDiagnostic: (String) -> Unit = {},
         ): BlockingDuplexByteStream {
+            val sessionId = UUID.randomUUID().toString().substring(0, 8)
+            val emit: (String) -> Unit = { message ->
+                runCatching { onDiagnostic("ANW-TRANSPORT session=$sessionId $message") }
+            }
             fun report(message: String) {
-                runCatching { onDiagnostic("ANW-TRANSPORT $message") }
+                emit(message)
                 Log.i(TAG, message)
             }
             val connectStartedNanos = System.nanoTime()
@@ -422,7 +426,7 @@ class Ix35AnwSocketStream private constructor(
                 val socketInitStatus = transact(remote, TRANSACTION_GET_SOCKET_INIT_STATUS, write = {})
                 val socketSubsystemInitialized = socketInitStatus != 0
                 report("event=socket-subsystem-status result=$socketInitStatus initialized=$socketSubsystemInitialized")
-                val socketCallback = SocketCallback(::report)
+                val socketCallback = SocketCallback(emit)
                 callback = socketCallback
                 stage = "register-callback"
                 transactVoid(remote, TRANSACTION_REGISTER_SOCKET_CALLBACK) { writeStrongBinder(socketCallback) }
@@ -478,7 +482,7 @@ class Ix35AnwSocketStream private constructor(
                 }
                 connectedSocketIndex = index[0]
                 socketConnected = true
-                val stream = Ix35AnwSocketStream(appContext, remote, serviceConnection, index[0], socketCallback, ::report)
+                val stream = Ix35AnwSocketStream(appContext, remote, serviceConnection, index[0], socketCallback, emit)
                 socketCallback.attach(index[0]) { bytes, length -> stream.enqueue(bytes, length) }
                 report("event=socket-connected result=$connectResult socketIndex=${index[0]} elapsedMs=${(System.nanoTime() - connectStartedNanos) / 1_000_000L}")
                 return stream
