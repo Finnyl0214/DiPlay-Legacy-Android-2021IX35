@@ -57,11 +57,13 @@ class Ix35AnwBluetoothAdapter(private val context: Context) : CarPlayBluetooth {
     }.getOrDefault(false)
 
     /** Reads the vendor radio state; this is not inferred from service-package presence. */
-    override fun isEnabled(): Boolean {
-        return withAnwBinder("radio-status") { remote ->
+    override fun isEnabled(): Boolean = readRadioPowerState() == true
+
+    /** Null means the Binder query was unavailable (including a main-thread call). */
+    fun readRadioPowerState(): Boolean? =
+        withAnwBinder("radio-status") { remote ->
             transactInt(remote, TRANSACTION_GET_BT_POWER_STATUS) == 1
-        } ?: false
-    }
+        }
 
     // Power-on remains user/system controlled; this backend does not silently toggle the radio.
     override fun enable(): Boolean = isEnabled()
