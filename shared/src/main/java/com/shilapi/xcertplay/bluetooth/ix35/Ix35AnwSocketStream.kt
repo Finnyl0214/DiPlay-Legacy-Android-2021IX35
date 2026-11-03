@@ -63,16 +63,33 @@ class Ix35AnwSocketStream private constructor(
                 val count = minOf(MAX_WRITE_CHUNK, data.size - offset)
                 val chunk = if (offset == 0 && count == data.size) data else data.copyOfRange(offset, offset + count)
                 val written = intArrayOf(0)
-                val result = transactInt(TRANSACTION_SOCKET_WRITE, {
-                    writeInt(socketIndex)
-                    writeByteArray(chunk)
-                    writeInt(chunk.size)
-                    writeInt(written.size)
-                }, { reply -> reply.readIntArray(written) })
-                if (result < 0) throw IOException("ANWBT_SocketWrite returned $result")
-                val actual = written[0]
-                if (actual <= 0 || actual > count) {
-                    throw IOException("ANWBT_SocketWrite returned invalid written=${actual}, chunk=$count")
+                val result = try {
+                    transactInt(TRANSACTION_SOCKET_WRITE, {
+                        writeInt(socketIndex)
+                        writeByteArray(chunk)
+                        writeInt(chunk.size)
+                        writeInt(written.size)
+                    }, { reply -> reply.readIntArray(written) })
+                } catch (e: Exception) {
+                    val io = IOException("ANWBT_SocketWrite transaction failed", e)
+                    synchronized(lock) { failure = io }
+                    throw io
+                }
+                if (result < 0) {
+                    val io = IOException("ANWBT_SocketWrite returned $result")
+                    synchronized(lock) { failure = io }
+                    throw io
+                }
+                // Match the upstream HSAE contract: some vendor implementations
+                // leave nWritten at zero even when the full chunk was accepted.
+                val actual = when {
+                    written[0] == 0 -> count
+                    written[0] in 1..count -> written[0]
+                    else -> {
+                        val io = IOException("ANWBT_SocketWrite returned invalid written=${written[0]}, chunk=$count")
+                        synchronized(lock) { failure = io }
+                        throw io
+                    }
                 }
                 offset += actual
             }
