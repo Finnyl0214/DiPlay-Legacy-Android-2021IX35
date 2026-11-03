@@ -4651,11 +4651,7 @@ class DiPlayActivity : ComponentActivity() {
             toast("未检测到原厂 ANW 蓝牙服务")
             return
         }
-        val address = DiPlayPreferences.phoneAddress(this)
-        if (address.isNullOrBlank() || !BluetoothAdapter.checkBluetoothAddress(address)) {
-            promptManualBluetoothInput()
-            return
-        }
+        val savedAddress = DiPlayPreferences.phoneAddress(this)
 
         ix35ProbeRunning = true
         toast("开始 ix35 ANW 传输诊断")
@@ -4673,30 +4669,42 @@ class DiPlayActivity : ComponentActivity() {
             }
             var stream: com.shilapi.xcertplay.transport.BlockingDuplexByteStream? = null
             var outcome = "unknown"
+            var promptManualFallback = false
             fun log(message: String) {
                 val safe = DiagnosticRedactor.redact(message) ?: return
                 val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
                 logWriter.enqueue("$timestamp  $safe")
             }
             try {
-                adapter.setDiagnosticSink { message -> AsyncDiagnosticLog.append(logFile, message) }
                 log("ANW-PROBE event=start mode=connect-listen-only payloadWrites=disabled")
-                val connectedStream = adapter.openRfcommStream(address, "00000000-deca-fade-deca-deafdecacafe")
-                stream = connectedStream
-                log("ANW-PROBE event=socket-connected result=true")
-                val received = connectedStream.recv(4096, 3000L)
-                when {
-                    received == null -> {
-                        outcome = "connected-no-callback-data"
-                        log("ANW-PROBE event=receive-timeout timeoutMs=3000")
-                    }
-                    received.isEmpty() -> {
-                        outcome = "peer-closed"
-                        log("ANW-PROBE event=stream-ended")
-                    }
-                    else -> {
-                        outcome = "callback-data-received"
-                        log("ANW-PROBE event=receive-data bytes=${received.size}")
+                val discovered = runCatching { adapter.getConnectedDevice() }.getOrNull()
+                val address = discovered?.address
+                    ?.takeIf { BluetoothAdapter.checkBluetoothAddress(it) }
+                    ?: savedAddress?.takeIf { BluetoothAdapter.checkBluetoothAddress(it) }
+                if (address.isNullOrBlank()) {
+                    outcome = "no-connected-hfp-phone"
+                    promptManualFallback = true
+                    log("ANW-PROBE event=phone-discovery result=not-found")
+                } else {
+                    log("ANW-PROBE event=phone-discovery result=found source=${if (discovered != null) "ANW-HFP" else "saved-fallback"}")
+                    adapter.setDiagnosticSink { message -> log("ANW-TRANSPORT $message") }
+                    val connectedStream = adapter.openRfcommStream(address, "00000000-deca-fade-deca-deafdecacafe")
+                    stream = connectedStream
+                    log("ANW-PROBE event=socket-connected result=true")
+                    val received = connectedStream.recv(4096, 3000L)
+                    when {
+                        received == null -> {
+                            outcome = "connected-no-callback-data"
+                            log("ANW-PROBE event=receive-timeout timeoutMs=3000")
+                        }
+                        received.isEmpty() -> {
+                            outcome = "peer-closed"
+                            log("ANW-PROBE event=stream-ended")
+                        }
+                        else -> {
+                            outcome = "callback-data-received"
+                            log("ANW-PROBE event=receive-data bytes=${received.size}")
+                        }
                     }
                 }
             } catch (error: Throwable) {
@@ -4711,7 +4719,8 @@ class DiPlayActivity : ComponentActivity() {
                 ix35ProbeRunning = false
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed) {
-                        toast("ix35 ANW 诊断结束：$outcome；请导出诊断报告")
+                        if (promptManualFallback) promptManualBluetoothInput()
+                        else toast("ix35 ANW 诊断结束：$outcome；请导出诊断报告")
                     }
                 }
             }
