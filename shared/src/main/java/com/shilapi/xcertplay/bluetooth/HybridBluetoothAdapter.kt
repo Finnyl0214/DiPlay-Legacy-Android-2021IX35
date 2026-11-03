@@ -60,9 +60,12 @@ class HybridBluetoothAdapter(
     }
 
     override fun getPairedDevices(): List<CarPlayBluetoothDevice> {
-        // Merge all stacks, dedupe by MAC. Previously this returned the first
-        // non-empty list, so an iPhone paired on the dongle was invisible
-        // when HSAE had any (audio-only) paired device (P1-1).
+        // ix35's ANW service currently exposes the connected HFP phone; do not
+        // mix in addresses from a different Bluetooth controller/backend.
+        if (ix35Anw?.isSupported() == true) {
+            return runCatching { ix35Anw.getPairedDevices() }.getOrDefault(emptyList())
+        }
+        // Merge all non-ix35 stacks, dedupe by MAC.
         val seen = HashSet<String>()
         val merged = ArrayList<CarPlayBluetoothDevice>()
         fun addAll(devices: List<CarPlayBluetoothDevice>) {
