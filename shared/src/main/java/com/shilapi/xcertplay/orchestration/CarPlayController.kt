@@ -1554,6 +1554,10 @@ class CarPlayController(
 
             val adapter = bluetoothAdapter
             val hybridAdapter = CarPlayBluetoothManager.get(appContext)
+            hybridAdapter.ix35Anw?.setDiagnosticSink { message -> debugLog(message) }
+            if (hybridAdapter.ix35Anw?.isSupported() == true) {
+                debugLog("ANW-TRANSPORT event=diagnostic-sink-attached")
+            }
             if (adapter != null && !adapter.isEnabled) {
                 runCatching { adapter.enable() }
                 // Upstream #822: wait only while the adapter is actually turning on;
