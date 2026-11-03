@@ -84,10 +84,14 @@ class Ix35AnwBluetoothAdapter(private val context: Context) : CarPlayBluetooth {
             val slotCount = reportedMax.coerceIn(1, MAX_HFP_SLOTS)
 
             for (index in 0 until slotCount) {
-                val status = transactInt(remote, TRANSACTION_GET_CONNECT_STATUS) {
-                    writeInt(HFP_PROFILE)
-                    writeInt(index)
-                }
+                val status = transactInt(
+                    remote,
+                    TRANSACTION_GET_CONNECT_STATUS,
+                    write = {
+                        writeInt(HFP_PROFILE)
+                        writeInt(index)
+                    },
+                )
                 report("event=hfp-slot-status index=$index connected=${status == CONNECTED_STATUS}")
                 if (status != CONNECTED_STATUS) continue
 
