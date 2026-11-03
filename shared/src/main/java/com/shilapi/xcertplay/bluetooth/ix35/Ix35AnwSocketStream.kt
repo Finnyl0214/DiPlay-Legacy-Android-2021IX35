@@ -57,6 +57,7 @@ class Ix35AnwSocketStream private constructor(
             if (incomingBytes + length > MAX_PENDING_BYTES) {
                 failure = IOException("ANW receive queue exceeded $MAX_PENDING_BYTES bytes")
                 peerClosed = true
+                report("event=receive-queue-overflow pendingBytes=$incomingBytes incomingBytes=$length limit=$MAX_PENDING_BYTES")
             } else {
                 callbackBytes += length
                 if (!firstReceiveLogged) {
@@ -92,11 +93,13 @@ class Ix35AnwSocketStream private constructor(
                 } catch (e: Exception) {
                     val io = IOException("ANWBT_SocketWrite transaction failed", e)
                     synchronized(lock) { failure = io }
+                    report("event=write-failed stage=binder-transaction error=${e.javaClass.simpleName}")
                     throw io
                 }
                 if (result < 0) {
                     val io = IOException("ANWBT_SocketWrite returned $result")
                     synchronized(lock) { failure = io }
+                    report("event=write-failed stage=vendor-result result=$result")
                     throw io
                 }
                 // Match the upstream HSAE contract exactly: every non-positive
@@ -105,6 +108,7 @@ class Ix35AnwSocketStream private constructor(
                 if (actual > count) {
                     val io = IOException("ANWBT_SocketWrite returned invalid written=$actual, chunk=$count")
                     synchronized(lock) { failure = io }
+                    report("event=write-failed stage=invalid-length reportedWritten=$actual requested=$count")
                     throw io
                 }
                 writeCalls++
@@ -269,6 +273,9 @@ class Ix35AnwSocketStream private constructor(
             buffered.forEach { (socket, bytes) ->
                 if (socket == index) target(bytes, bytes.size)
             }
+            if (buffered.isNotEmpty()) {
+                report("event=early-callback-buffer-drained bufferedCallbacks=${buffered.size}")
+            }
         }
 
         fun detach() {
@@ -303,7 +310,7 @@ class Ix35AnwSocketStream private constructor(
                         pending.addLast(Pair(index, copy))
                         pendingBytes += copy.size
                     } else {
-                        Log.e(TAG, "Dropping early ANW callback data: pending buffer limit exceeded")
+                        report("event=early-callback-buffer-overflow pendingBytes=$pendingBytes incomingBytes=$length limit=$MAX_PENDING_BYTES")
                     }
                     return
                 }
@@ -394,6 +401,7 @@ class Ix35AnwSocketStream private constructor(
             val bound = try {
                 appContext.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
             } catch (e: Exception) {
+                report("event=bind-service-failed error=${e.javaClass.simpleName}")
                 throw IOException("Could not bind ix35 ANW service", e)
             }
             report("event=bind-service result=$bound")
