@@ -848,6 +848,8 @@ class CarPlayController(
                         "teardown end elapsedMs=${elapsedMillis(teardownStarted)} " +
                             "executorTerminated=$executorTerminated",
                     )
+                    // The singleton adapter must not retain this controller/Activity after teardown.
+                    CarPlayBluetoothManager.get(appContext).ix35Anw?.setDiagnosticSink {}
                     teardownComplete.countDown()
                 }
             },
