@@ -10,6 +10,8 @@ class HybridBluetoothAdapter(
     val android: AndroidBluetoothAdapter,
     /** USB dongle stack; preferred for data channels when plugged in. */
     val usbDongle: UsbBtBluetoothAdapter? = null,
+    /** ix35 factory ANW data socket; preferred only when its service package exists. */
+    val ix35Anw: Ix35AnwBluetoothAdapter? = null,
 ) : CarPlayBluetooth {
 
     companion object {
@@ -17,15 +19,17 @@ class HybridBluetoothAdapter(
     }
 
     override fun isSupported(): Boolean =
-        hsae.isSupported() || android.isSupported() || usbDongle?.isSupported() == true
+        ix35Anw?.isSupported() == true || hsae.isSupported() || android.isSupported() || usbDongle?.isSupported() == true
 
     override fun isEnabled(): Boolean {
+        if (ix35Anw?.isSupported() == true) return ix35Anw.isEnabled()
         if (usbDongle?.isSupported() == true) return usbDongle.isEnabled()
         if (hsae.isSupported() && hsae.isEnabled()) return true
         return android.isEnabled()
     }
 
     override fun enable(): Boolean {
+        if (ix35Anw?.isSupported() == true) return ix35Anw.enable()
         var ok = false
         if (hsae.isSupported()) {
             ok = hsae.enable()
@@ -46,6 +50,7 @@ class HybridBluetoothAdapter(
     }
 
     override fun getAdapterName(): String {
+        if (ix35Anw?.isSupported() == true) return ix35Anw.getAdapterName()
         val parts = mutableListOf<String>()
         if (hsae.isSupported()) parts.add("HSAE")
         if (android.isSupported()) parts.add("Android")
@@ -98,6 +103,7 @@ class HybridBluetoothAdapter(
     }
 
     override fun openRfcommStream(deviceAddress: String, uuid: String): BlockingDuplexByteStream {
+        if (ix35Anw?.isSupported() == true) return ix35Anw.openRfcommStream(deviceAddress, uuid)
         val dongle = usbDongle
         if (dongle?.isSupported() == true) {
             if (!dongle.isEnabled()) throw java.io.IOException("USB Bluetooth not enabled")
