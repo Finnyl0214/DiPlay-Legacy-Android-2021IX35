@@ -296,11 +296,10 @@ class Ix35AnwSocketStream private constructor(
         private const val MAX_WRITE_CHUNK = 4096
         private const val MAX_PENDING_BYTES = 1024 * 1024
         private val EMPTY = ByteArray(0)
-        private const val IX35_IAP2_GUID = "00000000-deca-fade-deca-deafdecacafe"
 
         /** Call from a worker thread; address must be the paired iPhone MAC. */
         @Throws(IOException::class)
-        fun connect(context: Context, address: String): BlockingDuplexByteStream {
+        fun connect(context: Context, address: String, uuidString: String): BlockingDuplexByteStream {
             require(address.matches(Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$"))) { "Invalid Bluetooth address" }
             val appContext = context.applicationContext
             val latch = CountDownLatch(1)
@@ -336,14 +335,15 @@ class Ix35AnwSocketStream private constructor(
                 if (initResult < 0) throw IOException("ANWBT_SocketInit returned $initResult")
                 socketInitialized = true
                 val index = intArrayOf(-1)
-                val guid = uuidToGuidBytes(IX35_IAP2_GUID)
-                val connectResult = transact(
+                val guidBytes = uuidToGuidBytes(uuidString)
+                val rfcBytes = uuidToBytes(uuidString)
+                var connectResult = transact(
                     remote,
                     TRANSACTION_SOCKET_CONNECT,
                     write = {
                         writeInt(1)
                         writeString(address)
-                        writeByteArray(guid)
+                        writeByteArray(guidBytes)
                         writeInt(0)
                         writeLong(0L)
                         writeLong(0L)
@@ -351,6 +351,27 @@ class Ix35AnwSocketStream private constructor(
                     },
                     readTail = { reply -> reply.readIntArray(index) }
                 )
+                Log.i(TAG, "ANWBT_SocketConnect(GUID) returned $connectResult index=${index[0]}")
+                // Keep the upstream HSAE compatibility fallback: some vendor
+                // builds expect the UUID in RFC byte order rather than GUID order.
+                if (connectResult < 0 || index[0] < 0) {
+                    index[0] = -1
+                    connectResult = transact(
+                        remote,
+                        TRANSACTION_SOCKET_CONNECT,
+                        write = {
+                            writeInt(1)
+                            writeString(address)
+                            writeByteArray(rfcBytes)
+                            writeInt(0)
+                            writeLong(0L)
+                            writeLong(0L)
+                            writeInt(index.size)
+                        },
+                        readTail = { reply -> reply.readIntArray(index) }
+                    )
+                    Log.i(TAG, "ANWBT_SocketConnect(RFC) returned $connectResult index=${index[0]}")
+                }
                 if (connectResult < 0 || index[0] < 0) {
                     throw IOException("ANWBT_SocketConnect failed ret=$connectResult index=${index[0]}")
                 }
@@ -411,13 +432,18 @@ class Ix35AnwSocketStream private constructor(
             }
         }
 
-        private fun uuidToGuidBytes(value: String): ByteArray {
+        private fun uuidToBytes(value: String): ByteArray {
             val uuid = UUID.fromString(value)
             val raw = ByteArray(16)
             val msb = uuid.mostSignificantBits
             val lsb = uuid.leastSignificantBits
             for (i in 0 until 8) raw[i] = (msb ushr ((7 - i) * 8)).toByte()
             for (i in 0 until 8) raw[i + 8] = (lsb ushr ((7 - i) * 8)).toByte()
+            return raw
+        }
+
+        private fun uuidToGuidBytes(value: String): ByteArray {
+            val raw = uuidToBytes(value)
             return byteArrayOf(raw[3], raw[2], raw[1], raw[0], raw[5], raw[4], raw[7], raw[6]) + raw.copyOfRange(8, 16)
         }
     }
