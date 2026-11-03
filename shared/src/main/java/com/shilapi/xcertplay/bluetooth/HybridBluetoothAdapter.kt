@@ -62,10 +62,11 @@ class HybridBluetoothAdapter(
     override fun getPairedDevices(): List<CarPlayBluetoothDevice> {
         // ix35's ANW service currently exposes the connected HFP phone; do not
         // mix in addresses from a different Bluetooth controller/backend.
-        if (ix35Anw?.isSupported() == true) {
-            return runCatching { ix35Anw.getPairedDevices() }.getOrDefault(emptyList())
+        val anw = ix35Anw
+        if (anw != null && anw.isSupported()) {
+            return runCatching { anw.getPairedDevices() }.getOrDefault(emptyList())
         }
-        // Merge all non-ix35 stacks, dedupe by MAC.
+        // Merge non-ix35 stacks only, deduplicating by MAC.
         val seen = HashSet<String>()
         val merged = ArrayList<CarPlayBluetoothDevice>()
         fun addAll(devices: List<CarPlayBluetoothDevice>) {
@@ -73,9 +74,6 @@ class HybridBluetoothAdapter(
                 val key = device.address.lowercase()
                 if (seen.add(key)) merged.add(device)
             }
-        }
-        if (ix35Anw?.isSupported() == true) {
-            runCatching { addAll(ix35Anw.getPairedDevices()) }
         }
         if (hsae.isSupported()) runCatching { addAll(hsae.getPairedDevices()) }
         runCatching { addAll(android.getPairedDevices()) }
@@ -86,8 +84,9 @@ class HybridBluetoothAdapter(
     override fun getConnectedDevice(): CarPlayBluetoothDevice? {
         // ix35's ANW HFP query returns the remote phone address used by its
         // private iAP2 socket; Android BluetoothAdapter is unavailable there.
-        if (ix35Anw?.isSupported() == true) {
-            return runCatching { ix35Anw.getConnectedDevice() }.getOrNull()
+        val anw = ix35Anw
+        if (anw != null && anw.isSupported()) {
+            return runCatching { anw.getConnectedDevice() }.getOrNull()
         }
         // Dongle first: it is the data-capable stack. HSAE may report a
         // connected audio-only device that cannot carry iAP2.
