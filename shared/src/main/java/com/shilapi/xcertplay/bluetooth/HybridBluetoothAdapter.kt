@@ -71,6 +71,9 @@ class HybridBluetoothAdapter(
                 if (seen.add(key)) merged.add(device)
             }
         }
+        if (ix35Anw?.isSupported() == true) {
+            runCatching { addAll(ix35Anw.getPairedDevices()) }
+        }
         if (hsae.isSupported()) runCatching { addAll(hsae.getPairedDevices()) }
         runCatching { addAll(android.getPairedDevices()) }
         usbDongle?.let { runCatching { addAll(it.getPairedDevices()) } }
@@ -78,6 +81,11 @@ class HybridBluetoothAdapter(
     }
 
     override fun getConnectedDevice(): CarPlayBluetoothDevice? {
+        // ix35's ANW HFP query returns the remote phone address used by its
+        // private iAP2 socket; Android BluetoothAdapter is unavailable there.
+        if (ix35Anw?.isSupported() == true) {
+            return runCatching { ix35Anw.getConnectedDevice() }.getOrNull()
+        }
         // Dongle first: it is the data-capable stack. HSAE may report a
         // connected audio-only device that cannot carry iAP2.
         usbDongle?.let { runCatching { it.getConnectedDevice() } }?.getOrNull()?.let { return it }
