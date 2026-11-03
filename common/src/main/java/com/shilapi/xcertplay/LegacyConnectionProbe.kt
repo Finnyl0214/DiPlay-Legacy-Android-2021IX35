@@ -43,11 +43,14 @@ internal object LegacyConnectionProbe {
             val bluetooth = BluetoothAdapter.getDefaultAdapter()
             val hybrid = com.shilapi.xcertplay.bluetooth.CarPlayBluetoothManager.get(context)
             val ix35AnwActive = hybrid.ix35Anw?.isSupported() == true
-            val hybridEnabled = if (ix35AnwActive) "unknown" else hybrid.isEnabled().toString()
+            val ix35RadioState = if (ix35AnwActive) {
+                hybrid.ix35Anw?.readRadioPowerState()?.let { if (it) "on" else "off" } ?: "unknown"
+            } else null
+            val hybridEnabled = ix35RadioState ?: hybrid.isEnabled().toString()
             "Bluetooth adapter=${bluetooth != null} enabled=${bluetooth?.isEnabled} " +
                 "hybridSupported=${hybrid.isSupported()} hybridEnabled=$hybridEnabled " +
                 "hybridAdapter=${hybrid.getAdapterName()}" +
-                if (ix35AnwActive) " ix35AnwRadioState=not-exposed-by-verified-api" else ""
+                if (ix35AnwActive) " ix35AnwRadioState=$ix35RadioState" else ""
         }.getOrElse { "Bluetooth probe failed=${it.javaClass.simpleName}" })
         appendLine(runCatching {
             val usb = context.applicationContext.getSystemService(Context.USB_SERVICE) as? UsbManager
