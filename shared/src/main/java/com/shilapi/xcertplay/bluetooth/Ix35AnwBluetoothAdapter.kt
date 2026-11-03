@@ -41,6 +41,6 @@ class Ix35AnwBluetoothAdapter(private val context: Context) : CarPlayBluetooth {
         if (!ADDRESS_PATTERN.matches(deviceAddress)) {
             throw IOException("Invalid paired iPhone Bluetooth address")
         }
-        return Ix35AnwSocketStream.connect(context.applicationContext, deviceAddress)
+        return Ix35AnwSocketStream.connect(context.applicationContext, deviceAddress, uuid)
     }
 }
