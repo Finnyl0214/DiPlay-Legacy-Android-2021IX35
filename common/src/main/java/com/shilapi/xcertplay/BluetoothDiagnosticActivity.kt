@@ -2,6 +2,8 @@ package com.shilapi.xcertplay
 
 import com.shilapi.xcertplay.host.R
 import com.shilapi.xcertplay.bluetooth.CarPlayBluetoothManager
+import com.shilapi.xcertplay.iap2.session.Iap2Session
+import com.shilapi.xcertplay.transport.BlockingDuplexByteStream
 import com.shilapi.xcertplay.usbbt.UsbBtSelfTest
 import android.Manifest
 import android.annotation.SuppressLint
@@ -29,7 +31,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-/** A bounded transport probe: never sends iAP2 payloads or changes pairing. */
+/** Diagnostics: read-only by default; the explicit ix35 link test sends only iAP2 link-layer setup. */
 @SuppressLint("MissingPermission")
 class BluetoothDiagnosticActivity : ComponentActivity() {
     private val service = UUID.fromString("00000000-deca-fade-deca-deafdecacafe")
@@ -44,6 +46,7 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
     private var device: BluetoothDevice? = null
     private var registered = false
     private var busy = false
+    @Volatile private var activeAnwProbe: AutoCloseable? = null
     private val sdpReceived = java.util.concurrent.atomic.AtomicBoolean(false)
     private val knownNames = java.util.concurrent.CopyOnWriteArrayList<String>()
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -79,7 +82,7 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
         layout.addView(TextView(this).apply {
             text = when {
                 usingUsb -> getString(R.string.settings_usb_bluetooth_diagnostic_description)
-                usingAnw -> "ix35 原厂 ANW 蓝牙只读诊断\n仅查询原厂蓝牙服务状态、蓝牙电源状态和当前已连接的 HFP 手机。不执行搜索、配对、连接、断开或配置，也不发送数据。无需 MFi 身份文件或 Wi-Fi 热点。"
+                usingAnw -> "ix35 原厂 ANW 蓝牙诊断\n可单独执行只读状态检查，或执行 iAP2 链路层握手测试。握手测试会发送标准 iAP2 标记与同步数据，但不发送 MFi 认证数据、不启动 CarPlay 控制会话。无需 MFi 身份文件或 Wi-Fi 热点。"
                 else -> "完整蓝牙诊断\n一次采集权限、蓝牙状态、服务发现、两种连接及前后系统日志。每种连接最多 45 秒，只打开通道，不发送数据；超时后自动释放独立诊断进程。无需热点。系统日志需要已授权的本机 ADB；不可用时会明确注明。完成后在本页保存完整报告。"
             }
         })
@@ -101,6 +104,10 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
             setOnClickListener { requestProbe() }
         }
         layout.addView(start)
+        if (usingAnw) layout.addView(Button(this).apply {
+            text = "执行 ANW + iAP2 链路握手测试"
+            setOnClickListener { beginAnwIap2LinkDiagnostic() }
+        })
         layout.addView(Button(this).apply { text = "停止诊断"; setOnClickListener { cancel() } })
         layout.addView(Button(this).apply { text = "保存完整诊断报告"; setOnClickListener { saveReport() } })
         output = TextView(this).apply { setTextIsSelectable(true) }
@@ -160,6 +167,68 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
             } catch (error: Exception) {
                 record("ANW read-only diagnostic error ${error.javaClass.simpleName}: ${error.message}")
             } finally {
+                busy = false
+                runOnUiThread { if (!isFinishing) start.isEnabled = true }
+            }
+        }
+    }
+
+    /**
+     * Sends only the standard iAP2 link-layer marker/synchronization exchange over the factory
+     * ANW socket. It deliberately stops before accessory identification, MFi authentication,
+     * CSM control messages, Wi-Fi handoff, or CarPlay startup.
+     */
+    private fun beginAnwIap2LinkDiagnostic() {
+        if (busy) return
+        if (CarPlayBackgroundSession.hasSession()) {
+            record("请先在 DiPlay 主页面断开当前会话，避免两个连接互相干扰。")
+            return
+        }
+        busy = true
+        cancelled = false
+        start.isEnabled = false
+        worker.execute {
+            var adapter: com.shilapi.xcertplay.bluetooth.Ix35AnwBluetoothAdapter? = null
+            var stream: BlockingDuplexByteStream? = null
+            var session: Iap2Session? = null
+            try {
+                val anwAdapter = CarPlayBluetoothManager.get(applicationContext).ix35Anw
+                    ?: error("ix35 ANW adapter is unavailable")
+                adapter = anwAdapter
+                val phone = anwAdapter.getConnectedDevice()
+                    ?: error("No connected HFP phone was reported by the ANW service")
+                check(phone.address.matches(Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$"))) {
+                    "ANW returned an invalid remote Bluetooth address"
+                }
+                anwAdapter.setDiagnosticSink { message -> record(message) }
+                record("ANW iAP2 link-layer diagnostic started; protocolWrites=standard-marker-and-sync-only; mfi=false; carPlayBootstrap=false")
+                val openedStream = anwAdapter.openRfcommStream(phone.address, service.toString())
+                stream = openedStream
+                activeAnwProbe = openedStream
+                if (cancelled) throw InterruptedException("ANW iAP2 diagnostic cancelled before link negotiation")
+                record("ANW socket opened; starting existing wireless iAP2 link engine")
+                val openedSession = Iap2Session.openWireless(
+                    openedStream,
+                    traceContext = "ix35-anw-diagnostic",
+                    onTrace = ::record,
+                )
+                session = openedSession
+                activeAnwProbe = openedSession
+                stream = null // Iap2Session owns and closes the ANW stream.
+                val ready = openedSession.awaitReady(15_000L)
+                record("ANW iAP2 link-layer handshake ready=$ready")
+                if (!ready) {
+                    record("ANW iAP2 link-layer handshake did not complete within 15000ms; no accessory identification or MFi exchange was attempted")
+                }
+            } catch (error: Throwable) {
+                record("ANW iAP2 link diagnostic error=${error.javaClass.simpleName}: ${error.message}")
+            } finally {
+                runCatching { session?.close() }
+                    .onFailure { record("ANW iAP2 session close error=${it.javaClass.simpleName}: ${it.message}") }
+                runCatching { stream?.close() }
+                    .onFailure { record("ANW stream close error=${it.javaClass.simpleName}: ${it.message}") }
+                activeAnwProbe = null
+                adapter?.setDiagnosticSink {}
                 busy = false
                 runOnUiThread { if (!isFinishing) start.isEnabled = true }
             }
@@ -379,12 +448,14 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
 
     private fun cancel() {
         cancelled = true
+        activeAnwProbe?.let { probe -> Thread({ runCatching { probe.close() } }, "ix35-anw-probe-cancel").start() }
         if (probePid > 0 && probePid != android.os.Process.myPid()) android.os.Process.killProcess(probePid)
         record("Diagnostic cancellation requested")
     }
 
     override fun onDestroy() {
         cancelled = true
+        activeAnwProbe?.let { probe -> Thread({ runCatching { probe.close() } }, "ix35-anw-probe-destroy").start() }
         if (probePid > 0 && probePid != android.os.Process.myPid()) android.os.Process.killProcess(probePid)
         worker.shutdownNow()
         if (registered) unregisterReceiver(receiver)
