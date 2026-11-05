@@ -192,27 +192,30 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
             var stream: BlockingDuplexByteStream? = null
             var session: Iap2Session? = null
             try {
-                adapter = CarPlayBluetoothManager.get(applicationContext).ix35Anw
+                val anwAdapter = CarPlayBluetoothManager.get(applicationContext).ix35Anw
                     ?: error("ix35 ANW adapter is unavailable")
-                val phone = adapter.getConnectedDevice()
+                adapter = anwAdapter
+                val phone = anwAdapter.getConnectedDevice()
                     ?: error("No connected HFP phone was reported by the ANW service")
                 check(phone.address.matches(Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$"))) {
                     "ANW returned an invalid remote Bluetooth address"
                 }
-                adapter.setDiagnosticSink { message -> record(message) }
+                anwAdapter.setDiagnosticSink { message -> record(message) }
                 record("ANW iAP2 link-layer diagnostic started; protocolWrites=standard-marker-and-sync-only; mfi=false; carPlayBootstrap=false")
-                stream = adapter.openRfcommStream(phone.address, service.toString())
-                activeAnwProbe = stream
+                val openedStream = anwAdapter.openRfcommStream(phone.address, service.toString())
+                stream = openedStream
+                activeAnwProbe = openedStream
                 if (cancelled) throw InterruptedException("ANW iAP2 diagnostic cancelled before link negotiation")
                 record("ANW socket opened; starting existing wireless iAP2 link engine")
-                session = Iap2Session.openWireless(
-                    stream,
+                val openedSession = Iap2Session.openWireless(
+                    openedStream,
                     traceContext = "ix35-anw-diagnostic",
                     onTrace = ::record,
                 )
-                activeAnwProbe = session
+                session = openedSession
+                activeAnwProbe = openedSession
                 stream = null // Iap2Session owns and closes the ANW stream.
-                val ready = session.awaitReady(15_000L)
+                val ready = openedSession.awaitReady(15_000L)
                 record("ANW iAP2 link-layer handshake ready=$ready")
                 if (!ready) {
                     record("ANW iAP2 link-layer handshake did not complete within 15000ms; no accessory identification or MFi exchange was attempted")
@@ -225,7 +228,7 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
                 runCatching { stream?.close() }
                     .onFailure { record("ANW stream close error=${it.javaClass.simpleName}: ${it.message}") }
                 activeAnwProbe = null
-                adapter?.setDiagnosticSink {}
+                anwAdapter.setDiagnosticSink {}
                 busy = false
                 runOnUiThread { if (!isFinishing) start.isEnabled = true }
             }
@@ -445,12 +448,14 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
 
     private fun cancel() {
         cancelled = true
+        activeAnwProbe?.let { probe -> runCatching { probe.close() } }
         if (probePid > 0 && probePid != android.os.Process.myPid()) android.os.Process.killProcess(probePid)
         record("Diagnostic cancellation requested")
     }
 
     override fun onDestroy() {
         cancelled = true
+        activeAnwProbe?.let { probe -> runCatching { probe.close() } }
         if (probePid > 0 && probePid != android.os.Process.myPid()) android.os.Process.killProcess(probePid)
         worker.shutdownNow()
         if (registered) unregisterReceiver(receiver)
