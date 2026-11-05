@@ -228,7 +228,7 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
                 runCatching { stream?.close() }
                     .onFailure { record("ANW stream close error=${it.javaClass.simpleName}: ${it.message}") }
                 activeAnwProbe = null
-                anwAdapter.setDiagnosticSink {}
+                adapter?.setDiagnosticSink {}
                 busy = false
                 runOnUiThread { if (!isFinishing) start.isEnabled = true }
             }
@@ -448,7 +448,7 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
 
     private fun cancel() {
         cancelled = true
-        activeAnwProbe?.let { probe -> runCatching { probe.close() } }
+        activeAnwProbe?.let { probe -> Thread({ runCatching { probe.close() } }, "ix35-anw-probe-cancel").start() }
         if (probePid > 0 && probePid != android.os.Process.myPid()) android.os.Process.killProcess(probePid)
         record("Diagnostic cancellation requested")
     }
