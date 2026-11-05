@@ -31,7 +31,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-/** A bounded transport probe: never sends iAP2 payloads or changes pairing. */
+/** Diagnostics: read-only by default; the explicit ix35 link test sends only iAP2 link-layer setup. */
 @SuppressLint("MissingPermission")
 class BluetoothDiagnosticActivity : ComponentActivity() {
     private val service = UUID.fromString("00000000-deca-fade-deca-deafdecacafe")
@@ -455,7 +455,7 @@ class BluetoothDiagnosticActivity : ComponentActivity() {
 
     override fun onDestroy() {
         cancelled = true
-        activeAnwProbe?.let { probe -> runCatching { probe.close() } }
+        activeAnwProbe?.let { probe -> Thread({ runCatching { probe.close() } }, "ix35-anw-probe-destroy").start() }
         if (probePid > 0 && probePid != android.os.Process.myPid()) android.os.Process.killProcess(probePid)
         worker.shutdownNow()
         if (registered) unregisterReceiver(receiver)
